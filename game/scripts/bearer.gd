@@ -237,6 +237,11 @@ func _try_grab(i: int) -> void:
 			return
 
 
+func release_all() -> void:
+	for i in 2:
+		_release(i)
+
+
 func _release(i: int) -> void:
 	if grabs[i] != null:
 		grabs[i].queue_free()

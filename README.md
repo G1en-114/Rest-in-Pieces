@@ -25,9 +25,12 @@ API key 放在根目录 `.env`（`AHOLO_API_KEY=...`），**不要提交**。
 
 ```
 cd game
-E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --bot --quit=10        # 双人：抬到灵台
-E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --solotest --quit=17   # 单人：抬、扔、捡、转弯
+E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --bot --quit=24            # 走完第一关：花圈、转视角过断桥、放上灵台
+E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --bot --noalign --quit=20   # 不转视角上断桥：应掉进深渊并重生
+E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --solotest --quit=17       # 单人：抬、扔、捡、转弯
 ```
+
+脚本有语法错误时游戏不会自动退出，跑测试记得加超时（如 `timeout 90 ...`）。新增 `class_name` 后要先跑一次 `--headless --import` 让 Godot 登记新类。
 
 ## Git 分支
 
