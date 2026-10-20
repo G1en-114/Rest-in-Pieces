@@ -3,21 +3,18 @@ extends Node3D
 ##
 ## 两种玩法（开局按 1 / 2 选择，F5 重来时保留）：
 ##   单人：键鼠控制一个抬棺人，另一个是电脑队友，跟着你抓、跟着你走
-##   双人：两人共用一个键盘
-## 两种镜头：固定视角（Q/E 旋转 45°，滚轮缩放，为视错觉关卡准备）和第一人称，单人模式按 V 切换。
+##   双人：P1 用键鼠，P2 用键盘右侧；默认左右分屏各自第一人称（像《双人成行》）
+## 两种镜头：第一人称和固定俯视视角（Q/E 旋转 45°，滚轮缩放，过视错觉断桥要用它）。
+## 单人按 V 切换；双人按 V 或 Enter，两人一起在“分屏第一人称”和“共享俯视”之间切换。
 ##
 ## 命令行参数（放在 `--` 之后）：
 ##   --bot          两个抬棺人自动抓住棺材往灵台走（测试物理用）
 ##   --solotest     单人模式自动测试：抓起 → 走 → 扔到地上 → 弯腰捡起 → 再抬起来
 ##   --solo / --fp  直接进入单人模式 / 并切到第一人称
+##   --duo / --topdown  直接进入双人模式 / 并切到俯视
 ##   --quit=秒      到时间自动退出
 ##   --shot=路径    退出前截一张图
 
-const P1_KEYS := {
-	"up": [KEY_W], "down": [KEY_S], "left": [KEY_A], "right": [KEY_D],
-	"grab_l": [KEY_Q], "grab_r": [KEY_E], "jump": [KEY_SPACE],
-	"reach_up": [KEY_R], "reach_down": [KEY_F],
-}
 const P2_KEYS := {
 	"up": [KEY_UP], "down": [KEY_DOWN], "left": [KEY_LEFT], "right": [KEY_RIGHT],
 	"grab_l": [KEY_COMMA, KEY_KP_1], "grab_r": [KEY_PERIOD, KEY_KP_3], "jump": [KEY_SLASH, KEY_KP_0],
@@ -27,7 +24,10 @@ const CAM_DIST := 8.5
 const CAM_HEIGHT := 7.5
 const MOUSE_SENS := 0.0025
 const HAND_PITCH_OFFSET := 0.35  # 平视时手的仰角：大约举在胸口
-const FP_FREE_LOOK := 95.0  # 第一人称抓着东西时，转头这么多度以内身体不跟着转
+const P2_TURN_SPEED := 2.4  # P2 用 ←→ 转身的速度（弧度/秒）
+const P2_PITCH_SPEED := 1.5
+const FP_FREE_LOOK := 95.0  # 单人：转头超过这个角度会拖着身体（和队友、棺材）一起转
+const DUO_FREE_LOOK := 180.0  # 双人分屏：抓着东西时随便转头，棺材靠两人走位来转  # 第一人称抓着东西时，转头这么多度以内身体不跟着转
 const FP_EYE_HEIGHT := 0.8
 const GOAL := Level1.GOAL
 const COFFIN_START := Level1.COFFIN_START
@@ -41,6 +41,9 @@ var coffin: Coffin
 var corpse: Corpse
 var cam_fixed: Camera3D
 var cam_fp: Camera3D
+var cam_split: Array[Camera3D] = []  # 双人分屏的两个第一人称镜头
+var _split: Control
+var _fixed_mask := 0
 var hud: Label
 var status: Label
 var help: Label
@@ -52,7 +55,8 @@ var cam_yaw_target := 45.0
 var zoom := 1.0
 var look_yaw := 0.0
 var look_pitch := 0.0
-var duo_pitch: Array[float] = [HAND_PITCH_OFFSET, HAND_PITCH_OFFSET]
+var p2_yaw := PI
+var p2_pitch := 0.0
 
 var dignity := 100.0
 var elapsed := 0.0
@@ -74,8 +78,11 @@ var _altar_hint_shown := false
 
 var bot := false
 var solotest := false
+var _force_topdown := false
+var duotest := false
 var bot_noalign := false  # 测试用：不转视角直接走上断桥（应该掉下去）
-var quit_at := -1.0
+var quit_at := -1.0  # 按模拟时间算，开头卡顿不影响测试
+var sim_time := 0.0  # 物理模拟走过的时间，测试脚本都用它计时
 var shot_path := ""
 var _log_timer := 0.0
 
@@ -91,6 +98,13 @@ func _ready() -> void:
 			mode = "solo"
 		elif arg == "--solo":
 			mode = "solo"
+		elif arg == "--duo":
+			mode = "duo"
+		elif arg == "--duotest":
+			mode = "duo"
+			duotest = true
+		elif arg == "--topdown":
+			_force_topdown = true
 		elif arg == "--fp":
 			mode = "solo"
 			first_person = true
@@ -113,18 +127,22 @@ func _ready() -> void:
 	cam_fixed.projection = Camera3D.PROJECTION_ORTHOGONAL  # 正交投影：纪念碑谷式的视错觉只在正交下严格成立
 	cam_fixed.size = ORTHO_SIZE
 	cam_fixed.far = 200.0
-	cam_fixed.cull_mask &= ~(1 << (Bearer.FP_ONLY_LAYER - 1))
+	for layer in Bearer.HAND_LAYERS:
+		cam_fixed.cull_mask &= ~(1 << (layer - 1))
+	_fixed_mask = cam_fixed.cull_mask
 	add_child(cam_fixed)
 	cam_fixed.global_position = COFFIN_START + _cam_offset()
 	cam_fixed.look_at(COFFIN_START)
 	cam_fp = Camera3D.new()
 	cam_fp.fov = 75
 	cam_fp.near = 0.05
-	cam_fp.cull_mask &= ~(1 << (Bearer.FP_HIDDEN_LAYER - 1))
+	cam_fp.cull_mask = Bearer.fp_cull_mask(0)
 	add_child(cam_fp)
 	_build_hud()
 
-	if mode == "solo":
+	if mode == "duo":
+		first_person = not _force_topdown  # 双人默认分屏第一人称
+	if mode != "" and not bot:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_apply_camera()
 	if mode == "" and not bot:
@@ -143,7 +161,10 @@ func _spawn_team(coffin_pos: Vector3, floor_y: float) -> void:
 	_spawn_bearer(Vector3(coffin_pos.x, floor_y + 0.9, coffin_pos.z + 0.85), 0.0)
 	_spawn_bearer(Vector3(coffin_pos.x, floor_y + 0.9, coffin_pos.z - 0.85), PI)
 	if mode == "solo":
-		bearers[0].set_first_person_owner()
+		bearers[0].set_first_person_owner(0)
+	elif mode == "duo":
+		bearers[0].set_first_person_owner(0)
+		bearers[1].set_first_person_owner(1)
 
 
 ## 掉进深渊后在检查点重来：棺材放在地上，要自己弯腰捡起来
@@ -223,7 +244,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		look_yaw = wrapf(look_yaw - event.relative.x * MOUSE_SENS, -PI, PI)
 		look_pitch = clampf(look_pitch - event.relative.y * MOUSE_SENS, -1.5, 1.2)
 	elif event is InputEventMouseButton and event.pressed:
-		if mode == "solo" and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		if mode != "" and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			zoom = clampf(zoom - 0.1, 0.5, 1.8)
@@ -245,8 +266,11 @@ func _unhandled_input(event: InputEvent) -> void:
 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 			else:
 				get_tree().quit()
-		elif key == KEY_V and mode == "solo":
+		elif mode != "" and (key == KEY_V or (mode == "duo" and key in [KEY_ENTER, KEY_KP_ENTER])):
 			first_person = not first_person
+			if first_person and mode == "duo":
+				p2_yaw = _yaw_of(bearers[1])  # 切回分屏时，P2 的视角从他现在面朝的方向开始
+				p2_pitch = 0.0
 			_apply_camera()
 		elif not first_person and _is_rotate_key(key, -1):
 			cam_yaw_target -= 45.0
@@ -254,33 +278,38 @@ func _unhandled_input(event: InputEvent) -> void:
 			cam_yaw_target += 45.0
 
 
-## 旋转固定视角的键：单人用 Q / E（手由鼠标管），双人用 Z / X（Q / E 是 P1 的手）
+## 旋转固定视角的键：Q / E（也可以用 Z / X）
 func _is_rotate_key(key: Key, dir: int) -> bool:
 	if dir < 0:
-		return key == KEY_Z or (mode == "solo" and key == KEY_Q)
-	return key == KEY_X or (mode == "solo" and key == KEY_E)
+		return key in [KEY_Q, KEY_Z]
+	return key in [KEY_E, KEY_X]
 
 
 func _physics_process(delta: float) -> void:
+	sim_time += delta
 	if bot:
 		_drive_bot()
 	elif mode == "solo":
-		_control_solo()
+		_control_mouse_player()
 		_control_partner(bearers[1], bearers[0], delta)
 	elif mode == "duo":
-		_control_keyboard(0, P1_KEYS, delta)
-		_control_keyboard(1, P2_KEYS, delta)
+		_control_mouse_player()
+		_control_p2(delta)
+		if duotest:
+			_duotest_script()
 	_update_level()
 	_update_rules(delta)
 
 
-func _control_solo() -> void:
+## P1：键鼠。鼠标管视角和手的高度，左右键管两只手
+func _control_mouse_player() -> void:
 	var p := bearers[0]
 	var input := Vector2(_key(KEY_D) - _key(KEY_A), _key(KEY_S) - _key(KEY_W))
 	var basis := Basis(Vector3.UP, look_yaw) if first_person else cam_fixed.global_basis
 	p.move_dir = _to_world(input, basis)
 	p.face_yaw = look_yaw
-	p.face_deadzone = deg_to_rad(FP_FREE_LOOK) if first_person and p.is_holding() else 0.0
+	var free_look := DUO_FREE_LOOK if mode == "duo" else FP_FREE_LOOK
+	p.face_deadzone = deg_to_rad(free_look) if first_person and p.is_holding() else 0.0
 	p.reach_pitch = look_pitch + HAND_PITCH_OFFSET
 	p.want_grab = [Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT), Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)]
 	p.want_jump = Input.is_physical_key_pressed(KEY_SPACE)
@@ -342,15 +371,24 @@ func _yaw_of(b: Bearer) -> float:
 	return atan2(-f.x, -f.z)
 
 
-func _control_keyboard(i: int, keys: Dictionary, delta: float) -> void:
-	var b := bearers[i]
-	var input := Vector2(_held(keys.right) - _held(keys.left), _held(keys.down) - _held(keys.up))
-	b.move_dir = _to_world(input, cam_fixed.global_basis)
-	b.face_yaw = null
-	duo_pitch[i] = clampf(duo_pitch[i] + (_held(keys.reach_up) - _held(keys.reach_down)) * 1.5 * delta, -1.35, 1.1)
-	b.reach_pitch = duo_pitch[i]
-	b.want_grab = [_held(keys.grab_l) > 0.0, _held(keys.grab_r) > 0.0]
-	b.want_jump = _held(keys.jump) > 0.0
+## P2：键盘右侧。分屏第一人称时 ↑↓ 前后走、←→ 转身；俯视时方向键按画面方向走
+func _control_p2(delta: float) -> void:
+	var b := bearers[1]
+	var k := P2_KEYS
+	p2_pitch = clampf(p2_pitch + (_held(k.reach_up) - _held(k.reach_down)) * P2_PITCH_SPEED * delta, -1.5, 1.2)
+	if first_person:
+		p2_yaw = wrapf(p2_yaw + (_held(k.left) - _held(k.right)) * P2_TURN_SPEED * delta, -PI, PI)
+		b.move_dir = Basis(Vector3.UP, p2_yaw) * Vector3(0, 0, _held(k.down) - _held(k.up))
+		b.face_yaw = p2_yaw
+		b.face_deadzone = deg_to_rad(DUO_FREE_LOOK) if b.is_holding() else 0.0
+	else:
+		var input := Vector2(_held(k.right) - _held(k.left), _held(k.down) - _held(k.up))
+		b.move_dir = _to_world(input, cam_fixed.global_basis)
+		b.face_yaw = null
+		b.face_deadzone = 0.0
+	b.reach_pitch = p2_pitch + HAND_PITCH_OFFSET
+	b.want_grab = [_held(k.grab_l) > 0.0, _held(k.grab_r) > 0.0]
+	b.want_jump = _held(k.jump) > 0.0
 
 
 ## 把输入方向（x 右、y 下）按某个朝向换算成世界里的水平方向
@@ -453,17 +491,29 @@ func _cam_offset() -> Vector3:
 
 
 func _apply_camera() -> void:
-	cam_fp.current = first_person
-	cam_fixed.current = not first_person
-	_crosshair.visible = first_person
+	var split := mode == "duo" and first_person
+	if _split:
+		_split.visible = split
+	cam_fp.current = first_person and not split
+	cam_fixed.current = not first_person or split
+	# 分屏时主画面被两块分屏盖住，让它的镜头什么都不画，省一遍渲染
+	# （不能用 disable_3d：那会让主视口里的物体退出 3D 世界，物理直接停掉）
+	cam_fixed.cull_mask = 0 if split else _fixed_mask
+	_crosshair.visible = first_person and not split
 	if mode == "solo":
 		help.text = "WASD 移动 · 鼠标 看 / 控制手的高度（往下看就弯腰去够）· 左键 / 右键 左右手抓（按住）· 空格 跳\n" \
 			+ "V 切换第一人称 / 固定视角 · Q / E 旋转固定视角 · 滚轮 缩放 · F5 重来 · F1 换模式 · Esc 释放鼠标 / 退出"
 	elif mode == "duo":
-		help.text = "P1：WASD 移动 · Q / E 左右手抓（按住）· R / F 手抬高 / 放低 · 空格 跳\n" \
-			+ "P2：方向键 移动 · , / . 左右手抓 · ' / ; 手抬高 / 放低 · / 跳　　Z / X 旋转视角 · F5 重来 · F1 换模式"
+		help.text = "P1：WASD + 鼠标 · 左键 / 右键 抓 · 空格 跳 · Q / E 转俯视视角　　" \
+			+ "P2：↑↓ 走 · ←→ 转身（俯视时为平移）· ' / ; 抬头 / 低头 · , / . 抓 · / 跳\n" \
+			+ "V 或 Enter：分屏第一人称 ⇄ 共享俯视（过断桥要俯视）· 滚轮 缩放 · F5 重来 · F1 换模式 · Esc 释放鼠标 / 退出"
 	else:
 		help.text = ""
+
+
+func _place_fp_camera(cam: Camera3D, b: Bearer, yaw: float, pitch: float) -> void:
+	var view := Basis.from_euler(Vector3(pitch, yaw, 0))
+	cam.global_transform = Transform3D(view, b.to_global(Vector3(0, FP_EYE_HEIGHT, 0)) + Basis(Vector3.UP, yaw) * Vector3(0, 0, -0.12))
 
 
 func _process(delta: float) -> void:
@@ -476,17 +526,18 @@ func _process(delta: float) -> void:
 	cam_fixed.look_at(cam_fixed.global_position - _cam_offset())
 	cam_fixed.size = ORTHO_SIZE * zoom
 
-	if first_person:
-		var me := bearers[0]
-		var view := Basis.from_euler(Vector3(look_pitch, look_yaw, 0))
-		cam_fp.global_transform = Transform3D(view, me.to_global(Vector3(0, FP_EYE_HEIGHT, 0)) + Basis(Vector3.UP, look_yaw) * Vector3(0, 0, -0.12))
+	if first_person and mode == "duo":
+		_place_fp_camera(cam_split[0], bearers[0], look_yaw, look_pitch)
+		_place_fp_camera(cam_split[1], bearers[1], p2_yaw, p2_pitch)
+	elif first_person:
+		_place_fp_camera(cam_fp, bearers[0], look_yaw, look_pitch)
 
 	hud.text = "体面值 %d    用时 %.1f 秒" % [roundi(dignity), elapsed]
 	hud.add_theme_color_override("font_color", Color(1, 0.35, 0.3) if dignity < 0.0 else Color.WHITE)
 	status_timer -= delta
 	status.modulate.a = clampf(status_timer, 0.0, 1.0)
 
-	if quit_at >= 0.0 and Time.get_ticks_msec() / 1000.0 > quit_at:
+	if quit_at >= 0.0 and sim_time > quit_at:
 		quit_at = -1.0
 		_finish_run()
 
@@ -495,7 +546,7 @@ func _process(delta: float) -> void:
 
 ## 自动测试：两个抬棺人一起抓住棺材，沿关卡路线走；到断桥前转视角，过桥，送上灵台
 func _drive_bot() -> void:
-	var t := Time.get_ticks_msec() / 1000.0
+	var t := sim_time
 	for b in bearers:
 		b.want_grab = [t > 0.5, t > 0.5]
 		b.move_dir = Vector3.ZERO
@@ -536,8 +587,30 @@ func _drive_bot() -> void:
 		b.move_dir = dir
 
 
+## 双人测试：两人一起抓住棺材，各自转头看向前进方向（-Z），往前走
+func _duotest_script() -> void:
+	var t := sim_time
+	var walk := t > 2.0 and t < 4.5
+	for i in 2:
+		var b := bearers[i]
+		b.want_grab = [t > 0.5, t > 0.5]
+		b.move_dir = Vector3.FORWARD if walk else Vector3.ZERO
+	if t > 1.0:
+		look_yaw = lerp_angle(look_yaw, 0.0, 0.05)
+		p2_yaw = lerp_angle(p2_yaw, 0.0, 0.05)
+		bearers[0].face_yaw = look_yaw
+		bearers[1].face_yaw = p2_yaw
+	_log_timer -= get_physics_process_delta_time()
+	if _log_timer <= 0.0:
+		_log_timer = 0.5
+		for b in bearers:
+			print("DUO t=%.1f pos=%s vel=%s grab=%s held=%s move=%s hands=%s" % [t, b.global_position.snapped(Vector3.ONE * 0.01),
+				b.linear_velocity.snapped(Vector3.ONE * 0.01), b.want_grab, b.held.map(func(x): return x != null), b.move_dir,
+				b.hands.map(func(h): return h.global_position.snapped(Vector3.ONE * 0.01))])
+
+
 func _solotest_script(p: Bearer) -> void:
-	var t := Time.get_ticks_msec() / 1000.0
+	var t := sim_time
 	var grab := (t > 0.5 and t < 6.0) or t > 8.0
 	p.want_grab = [grab, grab]
 	p.move_dir = Vector3.ZERO
@@ -637,9 +710,45 @@ func _build_hud() -> void:
 	dot.text = "·"
 	dot.visible = false
 	_crosshair = dot
+	if mode == "duo":
+		_build_split(root)
 	if mode != "":
 		_say("抓住棺材把手，把棺材抬到远处有蜡烛的灵台上", 5.0)
 
+
+
+## 双人分屏：左右两块 SubViewport，共用同一个 3D 世界，各放一个第一人称镜头
+func _build_split(root: Control) -> void:
+	_split = HBoxContainer.new()
+	_split.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_split.add_theme_constant_override("separation", 4)
+	_split.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(_split)
+	root.move_child(_split, 0)  # 放在最底层，HUD 文字盖在上面
+	for i in 2:
+		var panel := Control.new()
+		panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_split.add_child(panel)
+		var svc := SubViewportContainer.new()
+		svc.stretch = true
+		svc.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		svc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		panel.add_child(svc)
+		var sv := SubViewport.new()
+		sv.msaa_3d = Viewport.MSAA_2X
+		svc.add_child(sv)
+		var cam := Camera3D.new()
+		cam.fov = 75
+		cam.near = 0.05
+		cam.cull_mask = Bearer.fp_cull_mask(i)
+		sv.add_child(cam)
+		cam_split.append(cam)
+		var tag := _label(panel, 22, Vector2(16, 64))
+		tag.text = "P1（键鼠）" if i == 0 else "P2（方向键）"
+		var dot := _label(panel, 28, Vector2.ZERO)
+		dot.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+		dot.text = "·"
 
 
 func _label(parent: Control, size: int, pos: Vector2) -> Label:

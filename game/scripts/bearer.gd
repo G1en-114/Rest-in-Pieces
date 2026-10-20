@@ -6,8 +6,10 @@ extends RigidBody3D
 ## 本身不读键盘：由 main.gd 里的玩家、电脑队友或测试脚本每帧填写下面这几个“意图”。
 
 const MODEL := preload("res://assets/bearer.glb")
-const FP_HIDDEN_LAYER := 2  # 第一人称时自己的身体放在这层，第一人称镜头不渲染
-const FP_ONLY_LAYER := 4  # 第一人称时才看得到的自己的手
+## 第一人称时每个玩家要对自己的镜头隐身、只露出手，所以每人占两个渲染层：
+## P1 身体在第 2 层、手在第 4 层；P2 身体在第 3 层、手在第 5 层。固定视角不渲染 4、5 层。
+const BODY_LAYERS := [2, 3]
+const HAND_LAYERS := [4, 5]
 
 const SPEED := 3.2
 const MOVE_ACCEL := 10.0
@@ -80,14 +82,22 @@ func _ready() -> void:
 		hands.append(hand)
 
 
-## 第一人称时：自己的身体对第一人称镜头隐身，只露出两只手
-func set_first_person_owner() -> void:
+## 第 player 号玩家（0 或 1）的第一人称：身体放到自己的层（自己的镜头不渲染），另给两只手一个只有自己看得见的球
+func set_first_person_owner(player: int) -> void:
 	for mi in _model.find_children("*", "MeshInstance3D", true, false):
-		mi.layers = 1 << (FP_HIDDEN_LAYER - 1)
+		mi.layers = 1 << (BODY_LAYERS[player] - 1)
 	for hand in hands:
 		var m := Art.mesh(Art.sphere(0.07), Art.SKIN)
-		m.layers = 1 << (FP_ONLY_LAYER - 1)
+		m.layers = 1 << (HAND_LAYERS[player] - 1)
 		hand.add_child(m)
+
+
+## 第 player 号玩家的第一人称镜头该看哪些层：不看自己的身体，也不看别人的“第一人称手”
+static func fp_cull_mask(player: int) -> int:
+	var mask := 0xFFFFF
+	mask &= ~(1 << (BODY_LAYERS[player] - 1))
+	mask &= ~(1 << (HAND_LAYERS[1 - player] - 1))
+	return mask
 
 
 func _build_model() -> void:

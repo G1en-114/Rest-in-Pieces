@@ -7,7 +7,7 @@
 
 ## 运行
 
-双击 `play.bat`（需要 Godot 4.7.2，装在 `E:\Godot`）。开局按 1 单人、按 2 双人同键盘。
+双击 `play.bat`（需要 Godot 4.7.2，装在 `E:\Godot`）。开局按 1 单人（电脑队友）、按 2 双人（P1 键鼠 + P2 方向键，左右分屏第一人称，V / Enter 切共享俯视）。
 
 ## 目录
 
@@ -28,6 +28,7 @@ cd game
 E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --bot --quit=24            # 走完第一关：花圈、转视角过断桥、放上灵台
 E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --bot --noalign --quit=20   # 不转视角上断桥：应掉进深渊并重生
 E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --solotest --quit=17       # 单人：抬、扔、捡、转弯
+E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --duotest --quit=5         # 双人分屏：两人抬着往前走
 ```
 
 脚本有语法错误时游戏不会自动退出，跑测试记得加超时（如 `timeout 90 ...`）。新增 `class_name` 后要先跑一次 `--headless --import` 让 Godot 登记新类。
