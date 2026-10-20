@@ -1,0 +1,11 @@
+# 文本统一用 LF，Godot 和 Windows 都能正常处理
+* text=auto eol=lf
+*.bat text eol=crlf
+
+# 二进制资产
+*.glb binary
+*.png binary
+*.jpg binary
+*.webp binary
+*.spz binary
+*.ply binary

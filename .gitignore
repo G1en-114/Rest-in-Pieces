@@ -1,0 +1,10 @@
+# 密钥，绝不提交
+.env
+
+# Godot
+.godot/
+
+# 导出与生成产物
+build/
+generated/
+tools/.venv/
