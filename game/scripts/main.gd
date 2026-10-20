@@ -1085,27 +1085,50 @@ func _finish_run() -> void:
 # ---------- 场景搭建 ----------
 
 func _build_environment() -> void:
+	# 黄昏：头顶蓝紫、地平线暖橘，往下是一片暗紫的雾海，建筑像悬在晚霞里
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
 	var sky := Sky.new()
 	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = Color(0.45, 0.62, 0.86)
-	sky_mat.sky_horizon_color = Color(0.82, 0.86, 0.9)
-	sky_mat.ground_horizon_color = Color(0.82, 0.86, 0.9)
-	sky_mat.ground_bottom_color = Color(0.93, 0.86, 0.84)  # 深渊下面是一片浅色虚空，而不是棕色地面
+	sky_mat.sky_top_color = Color(0.3, 0.33, 0.55)
+	sky_mat.sky_horizon_color = Color(0.98, 0.72, 0.56)
+	sky_mat.sky_curve = 0.12
+	sky_mat.ground_horizon_color = Color(0.92, 0.66, 0.56)
+	sky_mat.ground_bottom_color = Color(0.36, 0.3, 0.42)
+	sky_mat.ground_curve = 0.06
 	sky.sky_material = sky_mat
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.6
+	env.ambient_light_energy = 0.75
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.tonemap_exposure = 1.05
+	env.ssao_enabled = true
+	env.ssao_radius = 0.8
+	env.ssao_intensity = 1.6
+	env.glow_enabled = true
+	env.glow_intensity = 0.6
+	env.glow_hdr_threshold = 1.2
+	# 雾：整体一层很淡的暖色薄雾，越往下越浓，深渊里的桥墩和小岛渐渐隐掉
+	env.fog_enabled = true
+	env.fog_light_color = Color(0.86, 0.66, 0.62)
+	env.fog_density = 0.004
+	env.fog_sky_affect = 0.0
+	env.fog_height = -3.0
+	env.fog_height_density = 0.12
+	env.adjustment_enabled = true
+	env.adjustment_saturation = 1.08
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
 
 	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-55, -35, 0)
-	sun.light_energy = 1.3
+	sun.rotation_degrees = Vector3(-40, -35, 0)
+	sun.light_color = Color(1.0, 0.86, 0.7)
+	sun.light_energy = 1.25
+	sun.sky_mode = DirectionalLight3D.SKY_MODE_LIGHT_ONLY  # 天空里不画太阳（俯视时会变成一道白光）
 	sun.shadow_enabled = true
+	sun.shadow_blur = 1.5
+	sun.directional_shadow_max_distance = 60.0
 	add_child(sun)
 
 
