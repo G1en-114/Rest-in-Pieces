@@ -40,6 +40,7 @@ var hands: Array[RigidBody3D] = []
 var grabs: Array = [null, null]  # 每只手的关节
 var held: Array = [null, null]  # 每只手抓着的物体
 var bend := 0.0  # 当前前倾程度 0~1（往下够的时候）
+var puppet := false  # 联机客户端：不算物理，位置和 bend 都由房主的快照填写
 var _jump_was_down := false
 var _model: Node3D
 var _skeleton: Skeleton3D
@@ -126,6 +127,8 @@ func _build_model() -> void:
 
 
 func _physics_process(_delta: float) -> void:
+	if puppet:
+		return
 	var dir := move_dir.limit_length(1.0)
 	var grounded := _is_grounded()
 

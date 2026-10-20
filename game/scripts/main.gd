@@ -1,9 +1,10 @@
 extends Node3D
 ## 抬棺原型（第 1 阶段）：把棺材从起点的架子上抬起来，送到远处的灵台。
 ##
-## 两种玩法（开局按 1 / 2 选择，F5 重来时保留）：
+## 三种玩法（开局按 1 / 2 / 3 / 4 选择，F5 重来时保留）：
 ##   单人：键鼠控制一个抬棺人，另一个是电脑队友，跟着你抓、跟着你走
 ##   双人：P1 用键鼠，P2 用键盘右侧；默认左右分屏各自第一人称（像《双人成行》）
+##   联机：每人一台电脑。房主（3）计算全部物理；加入的人（4）只发按键，收到位置后插值显示
 ## 两种镜头：第一人称和固定俯视视角（Q/E 旋转 45°，滚轮缩放，过视错觉断桥要用它）。
 ## 单人按 V 切换；双人按 V 或 Enter，两人一起在“分屏第一人称”和“共享俯视”之间切换。
 ##
@@ -12,6 +13,8 @@ extends Node3D
 ##   --solotest     单人模式自动测试：抓起 → 走 → 扔到地上 → 弯腰捡起 → 再抬起来
 ##   --solo / --fp  直接进入单人模式 / 并切到第一人称
 ##   --duo / --topdown  直接进入双人模式 / 并切到俯视
+##   --host / --join=IP  直接建房间 / 加入房间
+##   --nettest      联机自动测试：两边各自抓住棺材往前走（房主和加入方都要加）
 ##   --quit=秒      到时间自动退出
 ##   --shot=路径    退出前截一张图
 
@@ -33,7 +36,10 @@ const GOAL := Level1.GOAL
 const COFFIN_START := Level1.COFFIN_START
 const ORTHO_SIZE := 15.0
 
-static var mode := ""  # "solo" | "duo"，重来时保留
+static var mode := ""  # "solo" | "duo" | "online"，重来时保留
+static var net_role := ""  # 联机时："host" | "client"
+static var join_ip := "127.0.0.1"
+static var menu_note := ""  # 回到选择界面时顺便提示一句（比如断线了）
 
 var level: Level1
 var bearers: Array[Bearer] = []
@@ -86,6 +92,18 @@ var sim_time := 0.0  # 物理模拟走过的时间，测试脚本都用它计时
 var shot_path := ""
 var _log_timer := 0.0
 
+# 联机
+var nettest := false
+var _sync := NetSync.new()
+var _gen := 0  # 每次重生整队 / 逝者加一；快照带着它，旧快照不会套到新身体上
+var _remote_input := {}  # 房主这边：加入方最近一次发来的按键
+var _remote_input_at := -10.0
+var _peer_joined_at := -1.0  # 房主：队友加入时的 sim_time（--nettest 从这时开始计时）
+var _net_tick := 0
+var _ip_edit: LineEdit
+var _wait_note := ""
+var _max_step := 0.0  # --nettest：加入方画面里棺材每帧最大位移，用来看有没有瞬移
+var _last_coffin_pos := Vector3.ZERO
 
 func _ready() -> void:
 	for arg in OS.get_cmdline_user_args():
@@ -108,6 +126,15 @@ func _ready() -> void:
 		elif arg == "--fp":
 			mode = "solo"
 			first_person = true
+		elif arg == "--host":
+			mode = "online"
+			net_role = "host"
+		elif arg.begins_with("--join="):
+			mode = "online"
+			net_role = "client"
+			join_ip = arg.get_slice("=", 1)
+		elif arg == "--nettest":
+			nettest = true
 		elif arg.begins_with("--camyaw="):
 			cam_yaw_target = float(arg.get_slice("=", 1))
 		elif arg.begins_with("--quit="):
@@ -136,17 +163,23 @@ func _ready() -> void:
 	cam_fp = Camera3D.new()
 	cam_fp.fov = 75
 	cam_fp.near = 0.05
-	cam_fp.cull_mask = Bearer.fp_cull_mask(0)
+	cam_fp.cull_mask = Bearer.fp_cull_mask(_me())
 	add_child(cam_fp)
 	_build_hud()
 
 	if mode == "duo":
 		first_person = not _force_topdown  # 双人默认分屏第一人称
-	if mode != "" and not bot:
+	if mode == "online" and net_role == "client":
+		look_yaw = PI  # 加入方站在棺材另一侧，面朝 +Z
+	if mode != "" and not bot and not nettest:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_apply_camera()
+	if mode == "online":
+		_start_net()
 	if mode == "" and not bot:
-		_say("按 1：单人模式（电脑队友帮你抬）\n按 2：双人模式（两人共用键盘）", 9999.0)
+		_say("按 1：单人模式（电脑队友帮你抬）\n按 2：双人模式（两人共用键盘）\n"
+			+ "按 3：联机建房间（你当房主）\n按 4：联机加入房间" + ("\n\n" + menu_note if menu_note else ""), 9999.0)
+		menu_note = ""
 
 
 ## 生成整队：棺材 + 逝者 + 两个抬棺人（站在棺材两侧）。floor_y 是脚下地面的高度
@@ -165,6 +198,10 @@ func _spawn_team(coffin_pos: Vector3, floor_y: float) -> void:
 	elif mode == "duo":
 		bearers[0].set_first_person_owner(0)
 		bearers[1].set_first_person_owner(1)
+	elif mode == "online":
+		bearers[_me()].set_first_person_owner(_me())
+		if net_role == "client":
+			_make_puppets()
 
 
 ## 掉进深渊后在检查点重来：棺材放在地上，要自己弯腰捡起来
@@ -181,6 +218,21 @@ func _respawn_team(cp: Vector3) -> void:
 	_coffin_falling = false
 	corpse_out = false
 	_spawn_team(cp + Vector3(0, 0.24, 0), cp.y)
+	_bump_gen()
+	if _is_host():
+		_net_respawn_team.rpc(cp)
+
+
+func _respawn_corpse() -> void:
+	corpse.queue_free()
+	corpse = Corpse.new()
+	corpse.transform = coffin.global_transform
+	add_child(corpse)
+	_bump_gen()
+	if _is_host():
+		_net_respawn_corpse.rpc()
+	elif net_role == "client":
+		_make_puppets()
 
 
 func _team_bodies() -> Array[RigidBody3D]:
@@ -195,7 +247,9 @@ func _team_bodies() -> Array[RigidBody3D]:
 ## 断桥：视角对齐时打开幽灵地面；棺材走过接缝时，整队连人带棺一起平移到另一段桥上。
 ## 平移方向正好沿着视线，所以画面上看不出任何跳动。
 func _update_level() -> void:
-	var aligned := not first_person and absf(wrapf(cam_yaw - Level1.ALIGN_YAW, -180.0, 180.0)) < 6.0
+	# 联机时只要有一个人在俯视、并且视角转对了，桥就接上
+	var someone_topdown: bool = not first_person or (_peer_present() and not _remote_input.get("fp", true))
+	var aligned := someone_topdown and absf(wrapf(cam_yaw - Level1.ALIGN_YAW, -180.0, 180.0)) < 6.0
 	if aligned != _bridge_aligned:
 		_bridge_aligned = aligned
 		level.set_bridge(aligned)
@@ -218,10 +272,7 @@ func _update_level() -> void:
 	elif corpse.torso.global_position.y < Level1.KILL_Y:
 		dignity -= 10.0
 		_say("逝者掉进了深渊……又被送回来了。体面 -10")
-		corpse.queue_free()
-		corpse = Corpse.new()
-		corpse.transform = coffin.global_transform
-		add_child(corpse)
+		_respawn_corpse()
 
 
 func _shift_team(d: Vector3) -> void:
@@ -255,12 +306,22 @@ func _unhandled_input(event: InputEvent) -> void:
 		if mode == "" and key in [KEY_1, KEY_KP_1, KEY_2, KEY_KP_2]:
 			mode = "solo" if key in [KEY_1, KEY_KP_1] else "duo"
 			get_tree().reload_current_scene()
+		elif mode == "" and key in [KEY_3, KEY_KP_3]:
+			mode = "online"
+			net_role = "host"
+			get_tree().reload_current_scene()
+		elif _ip_edit != null and key == KEY_ESCAPE:
+			get_tree().reload_current_scene()
+		elif mode == "" and key in [KEY_4, KEY_KP_4] and _ip_edit == null:
+			get_viewport().set_input_as_handled()
+			_show_ip_edit()
 		elif key in [KEY_F5, KEY_BACKSPACE]:
-			get_tree().reload_current_scene()
+			if net_role == "client":
+				_net_request_restart.rpc_id(1)
+			else:
+				_restart()
 		elif key == KEY_F1:
-			mode = ""
-			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-			get_tree().reload_current_scene()
+			_leave_online("")
 		elif key == KEY_ESCAPE:
 			if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -273,9 +334,17 @@ func _unhandled_input(event: InputEvent) -> void:
 				p2_pitch = 0.0
 			_apply_camera()
 		elif not first_person and _is_rotate_key(key, -1):
-			cam_yaw_target -= 45.0
+			_rotate_view(-1)
 		elif not first_person and _is_rotate_key(key, 1):
-			cam_yaw_target += 45.0
+			_rotate_view(1)
+
+
+## 俯视视角联机时是大家共用的：加入方按 Q/E 要请房主转
+func _rotate_view(dir: int) -> void:
+	if net_role == "client":
+		_net_rotate.rpc_id(1, dir)
+	else:
+		cam_yaw_target += 45.0 * dir
 
 
 ## 旋转固定视角的键：Q / E（也可以用 Z / X）
@@ -297,24 +366,39 @@ func _physics_process(delta: float) -> void:
 		_control_p2(delta)
 		if duotest:
 			_duotest_script()
+	elif net_role == "client":
+		_control_mouse_player()  # 只是把意图写在本地的傀儡身上，再发给房主
+		_net_tick += 1
+		if _net_tick % NetSync.INPUT_EVERY == 0 and _connected():
+			_send_input()
+		return  # 规则和关卡都由房主算
+	elif net_role == "host":
+		_control_mouse_player()
+		_apply_remote_input()
 	_update_level()
 	_update_rules(delta)
+	if _is_host():
+		_net_tick += 1
+		if _net_tick % NetSync.SEND_EVERY == 0 and _peer_present():
+			_send_state()
 
 
-## P1：键鼠。鼠标管视角和手的高度，左右键管两只手
+## 键鼠玩家（单人 / 双人的 P1 / 联机时自己）。鼠标管视角和手的高度，左右键管两只手
 func _control_mouse_player() -> void:
-	var p := bearers[0]
+	var p := bearers[_me()]
 	var input := Vector2(_key(KEY_D) - _key(KEY_A), _key(KEY_S) - _key(KEY_W))
 	var basis := Basis(Vector3.UP, look_yaw) if first_person else cam_fixed.global_basis
 	p.move_dir = _to_world(input, basis)
 	p.face_yaw = look_yaw
-	var free_look := DUO_FREE_LOOK if mode == "duo" else FP_FREE_LOOK
+	var free_look := FP_FREE_LOOK if mode == "solo" else DUO_FREE_LOOK
 	p.face_deadzone = deg_to_rad(free_look) if first_person and p.is_holding() else 0.0
 	p.reach_pitch = look_pitch + HAND_PITCH_OFFSET
 	p.want_grab = [Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT), Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)]
 	p.want_jump = Input.is_physical_key_pressed(KEY_SPACE)
 	if solotest:
 		_solotest_script(p)
+	elif nettest:
+		_nettest_script(p)
 
 
 ## 电脑队友：
@@ -475,7 +559,9 @@ func _on_coffin_hit(body: Node) -> void:
 
 
 func _say(text: String, seconds := 2.5) -> void:
-	if bot or solotest:
+	if _peer_present():
+		_net_say.rpc(text, seconds)
+	if bot or solotest or nettest:
 		print("SAY ", text.replace("
 ", " "))
 	status.text = text
@@ -507,6 +593,9 @@ func _apply_camera() -> void:
 		help.text = "P1：WASD + 鼠标 · 左键 / 右键 抓 · 空格 跳 · Q / E 转俯视视角　　" \
 			+ "P2：↑↓ 走 · ←→ 转身（俯视时为平移）· ' / ; 抬头 / 低头 · , / . 抓 · / 跳\n" \
 			+ "V 或 Enter：分屏第一人称 ⇄ 共享俯视（过断桥要俯视）· 滚轮 缩放 · F5 重来 · F1 换模式 · Esc 释放鼠标 / 退出"
+	elif mode == "online":
+		help.text = "WASD 移动 · 鼠标 看 / 控制手的高度 · 左键 / 右键 左右手抓（按住）· 空格 跳\n" \
+			+ "V 切换第一人称 / 俯视（俯视视角大家共用，有人俯视并转对角度桥才接上）· Q / E 旋转 · F5 重来 · F1 退出联机"
 	else:
 		help.text = ""
 
@@ -517,6 +606,10 @@ func _place_fp_camera(cam: Camera3D, b: Bearer, yaw: float, pitch: float) -> voi
 
 
 func _process(delta: float) -> void:
+	if net_role == "client":
+		_sync.apply(_team_bodies())
+		_max_step = maxf(_max_step, coffin.global_position.distance_to(_last_coffin_pos))
+		_last_coffin_pos = coffin.global_position
 	cam_yaw = lerpf(cam_yaw, cam_yaw_target, 1.0 - exp(-delta * 6.0))
 	var focus := coffin.global_position
 	for b in bearers:
@@ -530,7 +623,7 @@ func _process(delta: float) -> void:
 		_place_fp_camera(cam_split[0], bearers[0], look_yaw, look_pitch)
 		_place_fp_camera(cam_split[1], bearers[1], p2_yaw, p2_pitch)
 	elif first_person:
-		_place_fp_camera(cam_fp, bearers[0], look_yaw, look_pitch)
+		_place_fp_camera(cam_fp, bearers[_me()], look_yaw, look_pitch)
 
 	hud.text = "体面值 %d    用时 %.1f 秒" % [roundi(dignity), elapsed]
 	hud.add_theme_color_override("font_color", Color(1, 0.35, 0.3) if dignity < 0.0 else Color.WHITE)
@@ -542,7 +635,249 @@ func _process(delta: float) -> void:
 		_finish_run()
 
 
+# ---------- 联机 ----------
+# 房主权威：房主的电脑算全部物理和规则，30 次/秒把整队刚体的位置发给加入方；
+# 加入方的身体都是冻住的“傀儡”，只负责显示，自己的键鼠意图 60 次/秒发给房主。
+# 房主固定控制 0 号抬棺人，加入方控制 1 号。
+
+## 本机玩家控制第几个抬棺人
+func _me() -> int:
+	return 1 if mode == "online" and net_role == "client" else 0
+
+
+func _is_host() -> bool:
+	return mode == "online" and net_role == "host"
+
+
+func _connected() -> bool:
+	var peer := multiplayer.multiplayer_peer
+	return peer is ENetMultiplayerPeer and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED
+
+
+## 房主这边：队友在不在
+func _peer_present() -> bool:
+	return _is_host() and _connected() and not multiplayer.get_peers().is_empty()
+
+
+func _bump_gen() -> void:
+	_gen += 1
+	_sync.clear()
+
+
+## 加入方：整队都不算物理，只等快照来摆位置
+func _make_puppets() -> void:
+	for body in _team_bodies():
+		body.freeze_mode = RigidBody3D.FREEZE_MODE_KINEMATIC
+		body.freeze = true
+	for b in bearers:
+		b.puppet = true
+
+
+func _start_net() -> void:
+	var peer := multiplayer.multiplayer_peer
+	if not (peer is ENetMultiplayerPeer and peer.get_connection_status() != MultiplayerPeer.CONNECTION_DISCONNECTED):
+		peer = ENetMultiplayerPeer.new()
+		var err: Error
+		if net_role == "host":
+			err = peer.create_server(NetSync.PORT, 1)
+		else:
+			err = peer.create_client(join_ip, NetSync.PORT)
+		if err != OK:
+			_leave_online("端口 %d 被占用了（是不是已经开着一个房主窗口？）" % NetSync.PORT if net_role == "host"
+				else "无法连接 %s（错误 %d）" % [join_ip, err])
+			return
+		multiplayer.multiplayer_peer = peer
+	# multiplayer 跨场景重载一直存在；连的是本节点的方法，节点释放时会自动断开
+	multiplayer.peer_connected.connect(_on_peer_connected)
+	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+	multiplayer.connected_to_server.connect(_on_connected)
+	multiplayer.connection_failed.connect(_leave_online.bind(
+		"连不上 %s。确认房主已经建好房间、两台电脑在同一个局域网（或都开着 Radmin VPN），并且防火墙放行了 Godot" % join_ip))
+	multiplayer.server_disconnected.connect(_leave_online.bind("和房主断开了连接"))
+	if net_role == "host":
+		_wait_note = "房间建好了，等队友加入……\n让队友按 4，输入你的 IP：%s" % _local_ips()
+		if multiplayer.get_peers().is_empty():
+			_say(_wait_note, 9999.0)
+		else:
+			_peer_joined_at = 0.0  # F5 重来，队友还在
+	elif _connected():
+		_peer_joined_at = 0.0
+	else:
+		_say("正在连接 %s ……" % join_ip, 9999.0)
+
+
+func _local_ips() -> String:
+	var ips: Array[String] = []
+	for a in IP.get_local_addresses():
+		if a.contains(".") and not a.begins_with("127.") and not a.begins_with("169.254."):
+			ips.append(a)
+	return " 或 ".join(ips) if ips else "（没找到网卡地址）"
+
+
+func _on_peer_connected(_id: int) -> void:
+	if _is_host():
+		_peer_joined_at = sim_time
+		_say("队友加入了！一起抬吧")
+
+
+func _on_peer_disconnected(_id: int) -> void:
+	if _is_host():
+		_remote_input.clear()
+		_peer_joined_at = -1.0
+		_say("队友断开了。\n" + _wait_note, 9999.0)
+
+
+func _on_connected() -> void:
+	_peer_joined_at = sim_time
+	_say("连上了！抓住棺材把手，一起抬到灵台")
+
+
+## 退出联机，回到选择界面（note 会显示在选择界面上）
+func _leave_online(note: String) -> void:
+	if multiplayer.multiplayer_peer is ENetMultiplayerPeer:
+		multiplayer.multiplayer_peer.close()
+	multiplayer.multiplayer_peer = null
+	mode = ""
+	net_role = ""
+	menu_note = note
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if nettest:
+		print("NET left: ", note)
+		get_tree().quit.call_deferred()
+		return
+	get_tree().reload_current_scene.call_deferred()
+
+
+func _restart() -> void:
+	if _peer_present():
+		_net_restart.rpc()
+	get_tree().reload_current_scene()
+
+
+func _show_ip_edit() -> void:
+	_ip_edit = LineEdit.new()
+	_ip_edit.text = join_ip
+	_ip_edit.placeholder_text = "房主的 IP"
+	_ip_edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_ip_edit.custom_minimum_size = Vector2(380, 0)
+	_ip_edit.add_theme_font_size_override("font_size", 30)
+	status.get_parent().add_child(_ip_edit)
+	_ip_edit.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	_ip_edit.position.y += 120
+	_ip_edit.grab_focus()
+	_ip_edit.select_all()
+	_ip_edit.text_submitted.connect(func(text: String) -> void:
+		join_ip = text.strip_edges()
+		mode = "online"
+		net_role = "client"
+		get_tree().reload_current_scene())
+	_say("输入房主的 IP，按 Enter 加入（Esc 返回）", 9999.0)
+
+
+func _send_input() -> void:
+	var p := bearers[1]
+	_net_input.rpc_id(1, p.move_dir, float(p.face_yaw), p.reach_pitch, p.want_grab[0], p.want_grab[1], p.want_jump, first_person)
+
+
+## 房主：把加入方的按键填到 1 号抬棺人身上；一秒没收到就当他松手站着
+func _apply_remote_input() -> void:
+	var b := bearers[1]
+	if not _peer_present() or sim_time - _remote_input_at > 1.0:
+		b.move_dir = Vector3.ZERO
+		b.face_yaw = null
+		b.want_grab = [false, false]
+		b.want_jump = false
+		return
+	var r := _remote_input
+	b.move_dir = r.move
+	b.face_yaw = r.yaw
+	b.reach_pitch = r.pitch
+	b.want_grab = [r.grab_l, r.grab_r]
+	b.want_jump = r.jump
+	b.face_deadzone = deg_to_rad(DUO_FREE_LOOK) if r.fp and b.is_holding() else 0.0
+
+
+func _send_state() -> void:
+	var header := PackedFloat32Array([_gen, dignity, elapsed, cam_yaw_target, bearers[0].bend, bearers[1].bend])
+	_net_state.rpc(sim_time, header, NetSync.pack(_team_bodies()))
+
+
+@rpc("any_peer", "call_remote", "unreliable_ordered")
+func _net_input(move: Vector3, yaw: float, pitch: float, grab_l: bool, grab_r: bool, jump: bool, fp: bool) -> void:
+	if not _is_host():
+		return
+	_remote_input = {move = move.limit_length(1.0), yaw = yaw, pitch = clampf(pitch, -1.5, 1.6),
+		grab_l = grab_l, grab_r = grab_r, jump = jump, fp = fp}
+	_remote_input_at = sim_time
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _net_state(host_time: float, header: PackedFloat32Array, bodies: PackedFloat32Array) -> void:
+	if net_role != "client" or header.size() < 6 or int(header[0]) != _gen:
+		return
+	_sync.push(host_time, bodies)
+	dignity = header[1]
+	elapsed = header[2]
+	cam_yaw_target = header[3]
+	bearers[0].bend = header[4]
+	bearers[1].bend = header[5]
+
+
+@rpc("authority", "call_remote", "reliable")
+func _net_respawn_team(cp: Vector3) -> void:
+	_respawn_team(cp)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _net_respawn_corpse() -> void:
+	_respawn_corpse()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _net_say(text: String, seconds: float) -> void:
+	_say(text, seconds)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _net_rotate(dir: int) -> void:
+	if _is_host():
+		cam_yaw_target += 45.0 * signi(dir)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _net_request_restart() -> void:
+	if _is_host():
+		_restart()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _net_restart() -> void:
+	get_tree().reload_current_scene()
+
+
 # ---------- 自动测试 ----------
+
+## 联机测试：连上后两边各自抓住棺材，转头看向 -Z，一起往前走 3 秒
+func _nettest_script(p: Bearer) -> void:
+	p.reach_pitch = HAND_PITCH_OFFSET
+	if _peer_joined_at < 0.0:
+		p.want_grab = [false, false]
+		p.move_dir = Vector3.ZERO
+		return
+	var t := sim_time - _peer_joined_at
+	p.want_grab = [t > 1.0, t > 1.0]
+	if t > 1.5:
+		look_yaw = lerp_angle(look_yaw, 0.0, 0.05)
+		p.face_yaw = look_yaw
+	p.move_dir = Vector3.FORWARD if t > 3.0 and t < 6.0 else Vector3.ZERO
+	_log_timer -= get_physics_process_delta_time()
+	if _log_timer <= 0.0:
+		_log_timer = 0.5
+		print("NET %s t=%.1f coffin=%s tilt=%.0f b0=%s b1=%s held=%s max_step=%.3f" % [net_role, t,
+			coffin.global_position.snapped(Vector3.ONE * 0.01), rad_to_deg(coffin.global_basis.y.angle_to(Vector3.UP)),
+			bearers[0].global_position.snapped(Vector3.ONE * 0.01), bearers[1].global_position.snapped(Vector3.ONE * 0.01),
+			bearers.map(func(b): return b.holds(coffin)), _max_step])
+		_max_step = 0.0
 
 ## 自动测试：两个抬棺人一起抓住棺材，沿关卡路线走；到断桥前转视角，过桥，送上灵台
 func _drive_bot() -> void:

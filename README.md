@@ -9,6 +9,8 @@
 
 双击 `play.bat`（需要 Godot 4.7.2，装在 `E:\Godot`）。开局按 1 单人（电脑队友）、按 2 双人（P1 键鼠 + P2 方向键，左右分屏第一人称，V / Enter 切共享俯视）。
 
+**联机**（每人一台电脑）：房主按 3 建房间，屏幕上会显示本机 IP；队友按 4，输入房主的 IP 后按 Enter。两台电脑要在同一个局域网，或者都开着 Radmin VPN（用 26. 开头的那个 IP）。端口是 UDP 7777，第一次建房时 Windows 防火墙弹窗要点“允许”。
+
 ## 目录
 
 | 路径 | 内容 |
@@ -30,6 +32,15 @@ E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --bot --noalign --q
 E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --solotest --quit=17       # 单人：抬、扔、捡、转弯
 E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --duotest --quit=5         # 双人分屏：两人抬着往前走
 ```
+
+联机测试要开两个进程（房主先开）：
+
+```
+E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --host --nettest --quit=12
+E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless -- --join=127.0.0.1 --nettest --quit=10
+```
+
+两边都会打印 `NET` 行：加入方的棺材坐标应和房主一致（慢约 0.1 秒），`max_step` 是加入方画面里棺材每帧最大位移，远小于 0.2 就说明没有瞬移。
 
 脚本有语法错误时游戏不会自动退出，跑测试记得加超时（如 `timeout 90 ...`）。新增 `class_name` 后要先跑一次 `--headless --import` 让 Godot 登记新类。
 
