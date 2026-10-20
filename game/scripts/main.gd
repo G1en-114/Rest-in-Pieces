@@ -10,8 +10,10 @@ extends Node3D
 ##
 ## 命令行参数（放在 `--` 之后）：
 ##   --bot          两个抬棺人自动抓住棺材往灵台走（测试物理用）
+##   --lonetest     同上，但 2 号空着手自己过断桥（测试单人过桥不掉下去）
 ##   --solotest     单人模式自动测试：抓起 → 走 → 扔到地上 → 弯腰捡起 → 再抬起来
-##   --solo / --fp  直接进入单人模式 / 并切到第一人称
+##   --solo / --fp  直接进入单人模式 / 并切到第一人称（放在 --join 后面则是联机加入方用第一人称）
+##   --atbridge     整队直接出生在断桥前
 ##   --duo / --topdown  直接进入双人模式 / 并切到俯视
 ##   --host / --join=IP  直接建房间 / 加入房间
 ##   --nettest      联机自动测试：两边各自抓住棺材往前走（房主和加入方都要加）
@@ -86,6 +88,8 @@ var bot := false
 var solotest := false
 var _force_topdown := false
 var duotest := false
+var atbridge := false  # 测试用：整队直接出生在断桥前（上层检查点），面朝桥
+var lonetest := false  # 测试用：2 号抬棺人不抓棺材，空着手自己走过断桥（不该掉下去）
 var bot_noalign := false  # 测试用：不转视角直接走上断桥（应该掉下去）
 var quit_at := -1.0  # 按模拟时间算，开头卡顿不影响测试
 var sim_time := 0.0  # 物理模拟走过的时间，测试脚本都用它计时
@@ -104,6 +108,7 @@ var _ip_edit: LineEdit
 var _wait_note := ""
 var _max_step := 0.0  # --nettest：加入方画面里棺材每帧最大位移，用来看有没有瞬移
 var _last_coffin_pos := Vector3.ZERO
+var _flash_rects: Array[ColorRect] = []  # 过桥闪白：全屏一块；双人分屏时左右各一块
 
 func _ready() -> void:
 	for arg in OS.get_cmdline_user_args():
@@ -111,6 +116,9 @@ func _ready() -> void:
 			bot = true
 		elif arg == "--noalign":
 			bot_noalign = true
+		elif arg == "--lonetest":
+			bot = true
+			lonetest = true
 		elif arg == "--solotest":
 			solotest = true
 			mode = "solo"
@@ -124,7 +132,8 @@ func _ready() -> void:
 		elif arg == "--topdown":
 			_force_topdown = true
 		elif arg == "--fp":
-			mode = "solo"
+			if mode == "":
+				mode = "solo"
 			first_person = true
 		elif arg == "--host":
 			mode = "online"
@@ -133,6 +142,8 @@ func _ready() -> void:
 			mode = "online"
 			net_role = "client"
 			join_ip = arg.get_slice("=", 1)
+		elif arg == "--atbridge":
+			atbridge = true
 		elif arg == "--nettest":
 			nettest = true
 		elif arg.begins_with("--camyaw="):
@@ -148,7 +159,10 @@ func _ready() -> void:
 	level.bonus.connect(func(amount: float, text: String) -> void:
 		dignity += amount
 		_say(text))
-	_spawn_team(COFFIN_START, 0.0)
+	if atbridge:
+		_spawn_team(Level1.CHECKPOINT_UPPER + Vector3(0, 0.24, 0), 0.0)
+	else:
+		_spawn_team(COFFIN_START, 0.0)
 
 	cam_fixed = Camera3D.new()
 	cam_fixed.projection = Camera3D.PROJECTION_ORTHOGONAL  # 正交投影：纪念碑谷式的视错觉只在正交下严格成立
@@ -156,6 +170,7 @@ func _ready() -> void:
 	cam_fixed.far = 200.0
 	for layer in Bearer.HAND_LAYERS:
 		cam_fixed.cull_mask &= ~(1 << (layer - 1))
+	cam_fixed.cull_mask &= ~(1 << (Level1.HINT_LAYER - 1))
 	_fixed_mask = cam_fixed.cull_mask
 	add_child(cam_fixed)
 	cam_fixed.global_position = COFFIN_START + _cam_offset()
@@ -169,7 +184,9 @@ func _ready() -> void:
 
 	if mode == "duo":
 		first_person = not _force_topdown  # 双人默认分屏第一人称
-	if mode == "online" and net_role == "client":
+	if atbridge:
+		look_yaw = PI / 2  # 面朝 -X，看着断桥
+	elif mode == "online" and net_role == "client":
 		look_yaw = PI  # 加入方站在棺材另一侧，面朝 +Z
 	if mode != "" and not bot and not nettest:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -244,25 +261,42 @@ func _team_bodies() -> Array[RigidBody3D]:
 	return list
 
 
-## 断桥：视角对齐时打开幽灵地面；棺材走过接缝时，整队连人带棺一起平移到另一段桥上。
-## 平移方向正好沿着视线，所以画面上看不出任何跳动。
+## 断桥（“信任之桥”）：有人俯视、并且视角转对了，幽灵地面就打开；之后只要还有人站在接缝上，
+## 桥就锁住不断，免得俯视的人一转视角把队友摔下去。
+## 谁走过接缝，就把谁连同他抓着的东西一起平移到另一段桥上。平移方向正好沿着俯视的视线，
+## 所以俯视画面上看不出任何跳动；第一人称看到的永远是断桥，过桥时闪一下白光遮住瞬移。
 func _update_level() -> void:
 	# 联机时只要有一个人在俯视、并且视角转对了，桥就接上
 	var someone_topdown: bool = not first_person or (_peer_present() and not _remote_input.get("fp", true))
-	var aligned := someone_topdown and absf(wrapf(cam_yaw - Level1.ALIGN_YAW, -180.0, 180.0)) < 6.0
+	var view_ok := someone_topdown and absf(wrapf(cam_yaw - Level1.ALIGN_YAW, -180.0, 180.0)) < 6.0
+	var locked := _bridge_aligned and _team_bodies().any(func(b): return Level1.on_ghost(b.global_position))
+	var aligned := view_ok or locked
 	if aligned != _bridge_aligned:
 		_bridge_aligned = aligned
 		level.set_bridge(aligned)
 		if aligned and coffin.global_position.y > -2.0:
-			_say("咔哒——桥接上了！")
+			_say("咔哒——桥接上了！" + ("" if mode == "solo" else "
+第一人称的人：踩着金色虚线往虚空里走"))
+	if aligned:
+		for group in _move_groups():
+			var ref: RigidBody3D = group[0]
+			var p := ref.global_position
+			var d := Vector3.ZERO
+			if p.y > -2.0 and p.x < Level1.SEAM_X:
+				d = Level1.BRIDGE_OFFSET
+			elif p.y <= -2.0 and p.x > Level1.SEAM_X + Level1.BRIDGE_OFFSET.x:
+				d = -Level1.BRIDGE_OFFSET
+			if d == Vector3.ZERO:
+				continue
+			for body in group:
+				body.global_position += d
+			if ref == coffin:
+				_checkpoint = Level1.CHECKPOINT_LOWER if d.y < 0.0 else Level1.CHECKPOINT_UPPER
+			for i in bearers.size():
+				if bearers[i] in group:
+					_flash(i)
+
 	var c := coffin.global_position
-	var upper := c.y > -2.0
-	if aligned and upper and c.x < Level1.SEAM_X:
-		_shift_team(Level1.BRIDGE_OFFSET)
-		_checkpoint = Level1.CHECKPOINT_LOWER
-	elif aligned and not upper and c.x > Level1.SEAM_X + Level1.BRIDGE_OFFSET.x:
-		_shift_team(-Level1.BRIDGE_OFFSET)
-		_checkpoint = Level1.CHECKPOINT_UPPER
 
 	if c.y < Level1.KILL_Y or bearers.any(func(b): return b.global_position.y < Level1.KILL_Y):
 		dignity -= 30.0
@@ -275,9 +309,55 @@ func _update_level() -> void:
 		_respawn_corpse()
 
 
-func _shift_team(d: Vector3) -> void:
-	for body in _team_bodies():
-		body.global_position += d
+## 过桥时要一起平移的几组刚体：抓在一起的必须一起走，不然关节会把人扯飞。
+## 起步是棺材、逝者、每个抬棺人（连同两只手）各一组；谁抓着谁就并成一组，躺在棺材里的逝者跟棺材一组。
+## 每组第一个刚体是判断过没过接缝的参照（有棺材时就是棺材）。
+func _move_groups() -> Array:
+	var units: Array = [[coffin], corpse.parts.duplicate()]
+	for b in bearers:
+		units.append([b, b.hands[0], b.hands[1]])
+	var unit_of := {}
+	for i in units.size():
+		for body in units[i]:
+			unit_of[body] = i
+	var label: Array = range(units.size())
+	var links: Array = []
+	if coffin.contains(corpse.torso.global_position):
+		links.append([0, 1])
+	for i in range(2, units.size()):
+		for h in units[i][0].held:
+			if h != null and unit_of.has(h):
+				links.append([unit_of[h], i])
+	for l in links:
+		var from: int = label[l[1]]
+		var to: int = label[l[0]]
+		for k in label.size():
+			if label[k] == from:
+				label[k] = to
+	var groups := {}
+	for i in units.size():
+		if not groups.has(label[i]):
+			groups[label[i]] = []
+		groups[label[i]].append_array(units[i])
+	return groups.values()
+
+
+## 第 player 号玩家过桥瞬移了：第一人称就闪一下白光
+func _flash(player: int) -> void:
+	if mode == "duo":
+		if first_person:
+			_flash_rect(_flash_rects[player])
+	elif player == _me():
+		if first_person:
+			_flash_rect(_flash_rects[0])
+	elif _peer_present():
+		_net_flash.rpc()
+
+
+func _flash_rect(r: ColorRect) -> void:
+	var tw := create_tween()
+	tw.tween_property(r, "color:a", 1.0, 0.06).from(0.0)
+	tw.tween_property(r, "color:a", 0.0, 0.5)
 
 
 func _spawn_bearer(pos: Vector3, yaw: float) -> void:
@@ -798,7 +878,8 @@ func _apply_remote_input() -> void:
 
 
 func _send_state() -> void:
-	var header := PackedFloat32Array([_gen, dignity, elapsed, cam_yaw_target, bearers[0].bend, bearers[1].bend])
+	var header := PackedFloat32Array([_gen, dignity, elapsed, cam_yaw_target, bearers[0].bend, bearers[1].bend,
+		1.0 if _bridge_aligned else 0.0])
 	_net_state.rpc(sim_time, header, NetSync.pack(_team_bodies()))
 
 
@@ -813,7 +894,7 @@ func _net_input(move: Vector3, yaw: float, pitch: float, grab_l: bool, grab_r: b
 
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _net_state(host_time: float, header: PackedFloat32Array, bodies: PackedFloat32Array) -> void:
-	if net_role != "client" or header.size() < 6 or int(header[0]) != _gen:
+	if net_role != "client" or header.size() < 7 or int(header[0]) != _gen:
 		return
 	_sync.push(host_time, bodies)
 	dignity = header[1]
@@ -821,6 +902,9 @@ func _net_state(host_time: float, header: PackedFloat32Array, bodies: PackedFloa
 	cam_yaw_target = header[3]
 	bearers[0].bend = header[4]
 	bearers[1].bend = header[5]
+	if (header[6] > 0.5) != _bridge_aligned:
+		_bridge_aligned = header[6] > 0.5
+		level.set_bridge(_bridge_aligned)  # 加入方要看得见第一人称的虚线提示
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -831,6 +915,13 @@ func _net_respawn_team(cp: Vector3) -> void:
 @rpc("authority", "call_remote", "reliable")
 func _net_respawn_corpse() -> void:
 	_respawn_corpse()
+
+
+@rpc("authority", "call_remote", "reliable")
+func _net_flash() -> void:
+	await get_tree().create_timer(NetSync.INTERP_DELAY).timeout  # 等快照里的瞬移真的显示出来
+	if first_person:
+		_flash_rect(_flash_rects[0])
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -887,6 +978,8 @@ func _drive_bot() -> void:
 		b.move_dir = Vector3.ZERO
 		b.face_yaw = null
 		b.reach_pitch = HAND_PITCH_OFFSET
+	if lonetest:
+		bearers[1].want_grab = [false, false]
 	if t < 2.0:
 		return
 	_log_timer -= get_physics_process_delta_time()
@@ -973,10 +1066,10 @@ func _solotest_script(p: Bearer) -> void:
 
 
 func _bot_log(t: float) -> void:
-	print("BOT wp=%d aligned=%s t=%.1f coffin=%s tilt=%.0f dignity=%d corpse_out=%s holding=%s" % [
+	print("BOT wp=%d aligned=%s t=%.1f coffin=%s tilt=%.0f dignity=%d corpse_out=%s holding=%s b1=%s" % [
 		_bot_wp, _bridge_aligned, t, coffin.global_position.snapped(Vector3.ONE * 0.01),
 		rad_to_deg(coffin.global_basis.y.angle_to(Vector3.UP)), int(dignity), corpse_out,
-		bearers.map(func(b): return b.grabs.map(func(g): return g != null))])
+		bearers.map(func(b): return b.grabs.map(func(g): return g != null)), bearers[1].global_position.snapped(Vector3.ONE * 0.01)])
 
 
 func _finish_run() -> void:
@@ -1047,6 +1140,8 @@ func _build_hud() -> void:
 	_crosshair = dot
 	if mode == "duo":
 		_build_split(root)
+	else:
+		_flash_rects.append(_flash_overlay(root))
 	if mode != "":
 		_say("抓住棺材把手，把棺材抬到远处有蜡烛的灵台上", 5.0)
 
@@ -1079,11 +1174,21 @@ func _build_split(root: Control) -> void:
 		cam.cull_mask = Bearer.fp_cull_mask(i)
 		sv.add_child(cam)
 		cam_split.append(cam)
+		_flash_rects.append(_flash_overlay(panel))
 		var tag := _label(panel, 22, Vector2(16, 64))
 		tag.text = "P1（键鼠）" if i == 0 else "P2（方向键）"
 		var dot := _label(panel, 28, Vector2.ZERO)
 		dot.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 		dot.text = "·"
+
+
+func _flash_overlay(parent: Control) -> ColorRect:
+	var r := ColorRect.new()
+	r.color = Color(1, 1, 1, 0)
+	r.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(r)
+	return r
 
 
 func _label(parent: Control, size: int, pos: Vector2) -> Label:
