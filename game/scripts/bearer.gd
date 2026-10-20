@@ -40,6 +40,7 @@ var hands: Array[RigidBody3D] = []
 var grabs: Array = [null, null]  # 每只手的关节
 var held: Array = [null, null]  # 每只手抓着的物体
 var bend := 0.0  # 当前前倾程度 0~1（往下够的时候）
+var traction := 1.0  # 抓地力：踩在湿地板上会变小，起步刹车都打滑
 var puppet := false  # 联机客户端：不算物理，位置和 bend 都由房主的快照填写
 var _jump_was_down := false
 var _model: Node3D
@@ -134,8 +135,8 @@ func _physics_process(_delta: float) -> void:
 
 	# 移动：力作用在腰部以下，起步和刹车时身体会自己晃
 	var vel_h := Vector3(linear_velocity.x, 0, linear_velocity.z)
-	var force := (dir * SPEED - vel_h) * mass * MOVE_ACCEL
-	force = force.limit_length(MOVE_MAX_FORCE * (1.0 if grounded else 0.25))
+	var force := (dir * SPEED - vel_h) * mass * MOVE_ACCEL * traction
+	force = force.limit_length(MOVE_MAX_FORCE * traction * (1.0 if grounded else 0.25))
 	apply_force(force, global_basis.y * -0.45)
 
 	# 保持站立：力度有限，负重太大就会被压歪

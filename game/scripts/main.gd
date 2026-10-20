@@ -156,9 +156,11 @@ func _ready() -> void:
 	_build_environment()
 	level = Level1.new()
 	add_child(level)
-	level.bonus.connect(func(amount: float, text: String) -> void:
-		dignity += amount
-		_say(text))
+	if net_role != "client":  # 加入方的分数和提示都由房主发过来
+		level.bonus.connect(func(amount: float, text: String) -> void:
+			dignity += amount
+			_say(text))
+		level.notice.connect(_say)
 	if atbridge:
 		_spawn_team(Level1.CHECKPOINT_UPPER + Vector3(0, 0.24, 0), 0.0)
 	else:
@@ -455,6 +457,7 @@ func _physics_process(delta: float) -> void:
 	elif net_role == "host":
 		_control_mouse_player()
 		_apply_remote_input()
+	level.tick(sim_time)
 	_update_level()
 	_update_rules(delta)
 	if _is_host():
@@ -688,6 +691,7 @@ func _place_fp_camera(cam: Camera3D, b: Bearer, yaw: float, pitch: float) -> voi
 func _process(delta: float) -> void:
 	if net_role == "client":
 		_sync.apply(_team_bodies())
+		level.tick(_sync.render_time())
 		_max_step = maxf(_max_step, coffin.global_position.distance_to(_last_coffin_pos))
 		_last_coffin_pos = coffin.global_position
 	cam_yaw = lerpf(cam_yaw, cam_yaw_target, 1.0 - exp(-delta * 6.0))
@@ -999,6 +1003,9 @@ func _drive_bot() -> void:
 			cam_yaw_target = Level1.ALIGN_YAW
 		if _bridge_aligned or bot_noalign:
 			_bot_wp += 1
+	elif wp is String and wp == "trolley":
+		if level.trolley_safe():
+			_bot_wp += 1
 	elif wp is String and wp == "cross":
 		if coffin.global_position.y < -2.0:
 			_bot_wp += 1
@@ -1043,13 +1050,13 @@ func _solotest_script(p: Bearer) -> void:
 	p.want_grab = [grab, grab]
 	p.move_dir = Vector3.ZERO
 	look_pitch = 0.0
-	if t > 2.5 and t < 5.0:
+	if t > 2.5 and t < 3.4:  # 走得短一点，扔和捡都在停棺间里（走廊里有台阶和湿地板）
 		if first_person:
 			look_yaw = lerp_angle(look_yaw, atan2(1.0, 0.8), 0.05)  # 转头看向行走方向
 		p.move_dir = Vector3(0, 0, -1)  # 往灵台方向横着走
 	elif t > 6.5 and t < 9.5:
 		look_pitch = -1.45  # 低头弯腰去够地上的棺材
-	elif t > 11.0 and t < 13.0:
+	elif t > 11.0 and t < 12.0:
 		p.move_dir = Vector3(0, 0, -1)
 	elif t > 13.5 and t < 16.0 and not first_person:
 		look_yaw = wrapf(look_yaw + 1.0 * get_physics_process_delta_time(), -PI, PI)  # 原地转身，看棺材会不会跟着转

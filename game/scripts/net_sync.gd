@@ -33,6 +33,11 @@ static func now() -> float:
 	return Time.get_ticks_usec() / 1e6
 
 
+## 现在该显示房主哪一刻的画面（还没收到快照时返回 -1）
+func render_time() -> float:
+	return now() + _offset - INTERP_DELAY if _has_offset else -1.0
+
+
 func clear() -> void:
 	_snaps.clear()
 

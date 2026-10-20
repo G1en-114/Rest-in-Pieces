@@ -300,6 +300,35 @@ static func pine(height := 2.2) -> Node3D:
 	return n
 
 
+## 殡仪推车：不锈钢架子、白床单，上面还盖着一位（长沿本地 X）
+static func gurney() -> Node3D:
+	var n := Node3D.new()
+	var steel := Color(0.72, 0.74, 0.78)
+	_add(n, Art.box(Vector3(0.9, 0.05, 0.95)), steel, Vector3(0, 0.62, 0))
+	for x in [-0.4, 0.4]:
+		for z in [-0.42, 0.42]:
+			_add(n, Art.cylinder(0.02, 0.02, 0.56), steel, Vector3(x, 0.33, z))
+			_add(n, Art.cylinder(0.06, 0.06, 0.04), BLACK, Vector3(x, 0.06, z), Vector3.ONE, Vector3(PI / 2, 0, 0))
+	_add(n, Art.box(Vector3(0.86, 0.08, 0.92)), WHITE, Vector3(0, 0.69, 0))
+	_add(n, Art.sphere(0.3), WHITE, Vector3(0, 0.82, -0.05), Vector3(1.0, 0.35, 1.4))
+	_add(n, Art.sphere(0.13), WHITE, Vector3(0, 0.82, 0.42), Vector3(1, 0.7, 1))
+	for z in [-0.48, 0.48]:  # 推手
+		_add(n, Art.box(Vector3(0.7, 0.03, 0.03)), steel, Vector3(0, 0.95, z))
+		for x in [-0.33, 0.33]:
+			_add(n, Art.cylinder(0.015, 0.015, 0.3), steel, Vector3(x, 0.8, z))
+	return n
+
+
+## 拖把桶和拖把
+static func mop_bucket() -> Node3D:
+	var n := Node3D.new()
+	_add(n, Art.cylinder(0.17, 0.14, 0.3, 12), Color(0.2, 0.45, 0.85), Vector3(0, 0.15, 0))
+	_add(n, Art.cylinder(0.15, 0.15, 0.01, 12), Color(0.5, 0.6, 0.62), Vector3(0, 0.28, 0))
+	_add(n, Art.cylinder(0.015, 0.015, 1.3), Color(0.85, 0.75, 0.55), Vector3(0.08, 0.7, 0), Vector3.ONE, Vector3(0, 0, -0.2))
+	_add(n, Art.sphere(0.1), Color(0.92, 0.92, 0.88), Vector3(0.1, 0.22, 0), Vector3(1, 0.8, 1))
+	return n
+
+
 ## 跪垫
 static func kneel_cushion() -> Node3D:
 	var n := Node3D.new()
