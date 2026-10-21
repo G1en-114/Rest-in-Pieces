@@ -26,6 +26,7 @@ extends Node3D
 ##   --duo / --topdown  直接进入双人模式 / 并切到俯视
 ##   --host / --join=IP  直接建房间 / 加入房间
 ##   --nettest      联机自动测试：两边各自抓住棺材往前走（房主和加入方都要加）
+##   --photocam=N   截图用：镜头直接放在第 N 处视错觉的拍照点（加 --photofix 看拍完以后的样子）
 ##   --quit=秒      到时间自动退出
 ##   --shot=路径    退出前截一张图
 
@@ -46,6 +47,8 @@ const FP_EYE_HEIGHT := 0.8
 const ORTHO_SIZE := 15.0
 const DELIVER_TILT := 25.0  # 送达时棺材倾角要小于这个
 const DELIVER_HOLD := 1.5  # 稳稳停在灵台上这么久算送达
+static var NET_VERSION := "2026-10-21"  # 联机两边版本不一样就拒绝连接（改了联机协议或关卡就改这个；--netversion= 可以假装别的版本来测）
+const VIEWFINDER_FOV := 50.0  # 举起相机时镜头拉近一点
 ## 天空、雾、太阳的默认值（中式关的黄昏），关卡的 env() 可以覆盖其中任意几项
 const ENV_DEFAULT := {
 	sky_top = Color(0.3, 0.33, 0.55), sky_horizon = Color(0.98, 0.72, 0.56), sky_curve = 0.12,
@@ -121,6 +124,8 @@ var _room_test := -1  # --bot --room=N：只测第 N 间
 var quit_at := -1.0  # 按模拟时间算，开头卡顿不影响测试
 var sim_time := 0.0  # 物理模拟走过的时间，测试脚本都用它计时
 var shot_path := ""
+var _photocam := -1
+var _photofix := false
 var _log_timer := 0.0
 
 # 联机
@@ -135,6 +140,13 @@ var _wait_note := ""
 var _max_step := 0.0  # --nettest：加入方画面里棺材每帧最大位移，用来看有没有瞬移
 var _last_coffin_pos := Vector3.ZERO
 var _flash_rects: Array[ColorRect] = []  # 过桥闪白：全屏一块；双人分屏时左右各一块
+
+# 相机（拍照固定视错觉）：每块画面一个取景框；0 = 键鼠玩家，1 = 双人时的 P2
+var _viewfinder: Array[bool] = [false, false]
+var _frozen_grab: Array = [[false, false], [false, false]]  # 举相机时手保持原来抓没抓
+var _vf_frames: Array[Control] = []
+var _vf_hints: Array[Label] = []
+var _photo_thumb: TextureRect
 
 
 func _ready() -> void:
@@ -191,8 +203,14 @@ func _ready() -> void:
 			menu_page = arg.get_slice("=", 1)
 		elif arg == "--nettest":
 			nettest = true
+		elif arg.begins_with("--netversion="):
+			NET_VERSION = arg.get_slice("=", 1)
 		elif arg.begins_with("--camyaw="):
 			cam_yaw_target = float(arg.get_slice("=", 1))
+		elif arg.begins_with("--photocam="):
+			_photocam = int(arg.get_slice("=", 1))
+		elif arg == "--photofix":
+			_photofix = true
 		elif arg.begins_with("--quit="):
 			quit_at = float(arg.get_slice("=", 1))
 		elif arg.begins_with("--shot="):
@@ -267,6 +285,8 @@ func _ready() -> void:
 
 	if mode == "duo":
 		first_person = not _force_topdown  # 双人默认分屏第一人称
+	elif level.prefer_first_person and mode != "" and not _force_topdown and not nettest:
+		first_person = true  # 主打第一人称的关卡（墨西哥）一进来就是第一人称
 	if atbridge:
 		look_yaw = PI / 2  # 面朝 -X，看着断桥
 	elif mode == "online" and net_role == "client":
@@ -473,6 +493,7 @@ func _on_menu_start(m: String, role: String, lid: String, r: int, resume: bool) 
 
 func _on_menu_join(ip: String) -> void:
 	join_ip = ip
+	Save.set_last_ip(ip)
 	mode = "online"
 	net_role = "client"
 	level_id = ""
@@ -551,6 +572,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseButton and event.pressed:
 		if mode != "" and not finished and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+		elif event.button_index == MOUSE_BUTTON_LEFT and _viewfinder[0]:
+			_shoot(0)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			zoom = clampf(zoom - 0.1, 0.5, 1.8)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
@@ -573,8 +596,17 @@ func _unhandled_input(event: InputEvent) -> void:
 			_command("R")
 		elif key == KEY_F1:
 			_leave_online("")
+		elif key == KEY_C and first_person:
+			_toggle_viewfinder(0)
+		elif key == KEY_BRACKETLEFT and first_person and mode == "duo":
+			_toggle_viewfinder(1)
+		elif key == KEY_BRACKETRIGHT and _viewfinder[1]:
+			_shoot(1)
 		elif key == KEY_V or (mode == "duo" and key in [KEY_ENTER, KEY_KP_ENTER]):
 			first_person = not first_person
+			for i in 2:
+				if _viewfinder[i]:
+					_toggle_viewfinder(i)
 			if first_person and mode == "duo":
 				p2_yaw = _yaw_of(bearers[1])  # 切回分屏时，P2 的视角从他现在面朝的方向开始
 				p2_pitch = 0.0
@@ -642,7 +674,10 @@ func _control_mouse_player() -> void:
 	var free_look := FP_FREE_LOOK if mode == "solo" else DUO_FREE_LOOK
 	p.face_deadzone = deg_to_rad(free_look) if first_person and p.is_holding() else 0.0
 	p.reach_pitch = look_pitch + HAND_PITCH_OFFSET
-	p.want_grab = [Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT), Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)]
+	if _viewfinder[0]:
+		p.want_grab = _frozen_grab[0].duplicate()  # 举着相机时左键是快门，手保持原样
+	else:
+		p.want_grab = [Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT), Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)]
 	p.want_jump = Input.is_physical_key_pressed(KEY_SPACE)
 	if solotest:
 		_solotest_script(p)
@@ -720,7 +755,7 @@ func _control_p2(delta: float) -> void:
 		b.face_yaw = null
 		b.face_deadzone = 0.0
 	b.reach_pitch = p2_pitch + HAND_PITCH_OFFSET
-	b.want_grab = [_held(k.grab_l) > 0.0, _held(k.grab_r) > 0.0]
+	b.want_grab = _frozen_grab[1].duplicate() if _viewfinder[1] else [_held(k.grab_l) > 0.0, _held(k.grab_r) > 0.0]
 	b.want_jump = _held(k.jump) > 0.0
 
 
@@ -859,10 +894,20 @@ func _process(delta: float) -> void:
 		_place_fp_camera(cam_split[1], bearers[1], p2_yaw, p2_pitch)
 	elif first_person:
 		_place_fp_camera(cam_fp, bearers[_me()], look_yaw, look_pitch)
+	_update_viewfinders(delta)
+	if _photocam >= 0 and _photocam < level._illusions.size():
+		var il: Dictionary = level._illusions[_photocam]
+		cam_fp.current = true
+		cam_fp.global_transform = Transform3D(Basis.looking_at(il.dir, Vector3.UP), il.eye)
+		if _photofix:
+			level.fix_illusion(_photocam)
 
 	hud.visible = mode != "" and not _waiting
 	hud.text = "体面值 %d    用时 %s    第 %d / %d 间 · %s" % [roundi(score.dignity), Score.clock(score.elapsed),
 		room + 1, level.rooms.size(), level.rooms[room].name]
+	if mode == "online" and _connected() and not multiplayer.get_peers().is_empty():
+		var q := _link_quality()
+		hud.text += "    延迟 %d ms · 丢包 %d%%" % [q.x, q.y]
 	hud.add_theme_color_override("font_color", Color(1, 0.35, 0.3) if score.dignity < 0.0 else Color.WHITE)
 	status_timer -= delta
 	status.modulate.a = clampf(status_timer, 0.0, 1.0)
@@ -948,18 +993,57 @@ func _start_net() -> void:
 		_peer_joined_at = 0.0
 
 
+## 本机的 IPv4 地址：Radmin VPN 的（26. 开头）排最前面，队友一般用这个
 func _local_ips() -> String:
-	var ips: Array[String] = []
+	var radmin: Array[String] = []
+	var others: Array[String] = []
 	for a in IP.get_local_addresses():
-		if a.contains(".") and not a.begins_with("127.") and not a.begins_with("169.254."):
-			ips.append(a)
-	return " 或 ".join(ips) if ips else "（没找到网卡地址）"
+		if a.begins_with("26."):
+			radmin.append("Radmin：" + a)
+		elif a.contains(".") and not a.begins_with("127.") and not a.begins_with("169.254."):
+			others.append(a)
+	radmin.append_array(others)
+	return "\n".join(radmin) if radmin else "（没找到网卡地址）"
 
 
-## 队友中途加入：带着现在的分数，从当前检查点一起重开（这样两边的场景和计时从同一刻开始）
+## 和队友之间的网络：x = 往返延迟（毫秒），y = 丢包率（%）
+func _link_quality() -> Vector2i:
+	var peers := multiplayer.get_peers()
+	var enet := multiplayer.multiplayer_peer as ENetMultiplayerPeer
+	if peers.is_empty() or enet == null:
+		return Vector2i(-1, 0)
+	var pp := enet.get_peer(peers[0])
+	if pp == null:
+		return Vector2i(-1, 0)
+	return Vector2i(int(pp.get_statistic(ENetPacketPeer.PEER_ROUND_TRIP_TIME)),
+		int(pp.get_statistic(ENetPacketPeer.PEER_PACKET_LOSS) / ENetPacketPeer.PACKET_LOSS_SCALE * 100.0))
+
+
+## 队友连上来：先等他报版本号（_net_hello），对上了再带他进同一关
 func _on_peer_connected(_id: int) -> void:
 	if _is_host():
-		_goto(level_id, room, score.snapshot())
+		say("有人连上来了，核对版本……", 3.0)
+
+
+## 加入方报版本号。版本对得上：带着现在的分数，从当前检查点一起重开（这样两边的场景和计时从同一刻开始）
+@rpc("any_peer", "call_remote", "reliable")
+func _net_hello(version: String) -> void:
+	if not _is_host():
+		return
+	var id := multiplayer.get_remote_sender_id()
+	if version != NET_VERSION:
+		_net_reject.rpc_id(id, "版本对不上：房主是 %s，你是 %s。两边要用同一个压缩包里的游戏" % [NET_VERSION, version])
+		get_tree().create_timer(0.5).timeout.connect(func() -> void:
+			if multiplayer.multiplayer_peer is ENetMultiplayerPeer:
+				multiplayer.multiplayer_peer.disconnect_peer(id))
+		say("队友的游戏版本和你不一样，已拒绝（%s）" % version, 6.0)
+		return
+	_goto(level_id, room, score.snapshot())
+
+
+@rpc("authority", "call_remote", "reliable")
+func _net_reject(reason: String) -> void:
+	_leave_online(reason)
 
 
 func _on_peer_disconnected(_id: int) -> void:
@@ -970,6 +1054,7 @@ func _on_peer_disconnected(_id: int) -> void:
 
 
 func _on_connected() -> void:
+	_net_hello.rpc_id(1, NET_VERSION)
 	if _waiting:
 		_menu.show_text("联机", "连上了，等房主选关……")
 	else:
@@ -1019,7 +1104,7 @@ func _apply_remote_input() -> void:
 
 func _send_state() -> void:
 	var header := PackedFloat32Array([_gen, score.dignity, score.elapsed, cam_yaw_target, bearers[0].bend, bearers[1].bend,
-		room])
+		room, level.illusion_mask()])
 	_net_state.rpc(sim_time, header, NetSync.pack(_sync_bodies()), level.net_state())
 
 
@@ -1034,7 +1119,7 @@ func _net_input(move: Vector3, yaw: float, pitch: float, grab_l: bool, grab_r: b
 
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _net_state(host_time: float, header: PackedFloat32Array, bodies: PackedFloat32Array, level_state: PackedFloat32Array) -> void:
-	if net_role != "client" or _waiting or header.size() < 7 or int(header[0]) != _gen:
+	if net_role != "client" or _waiting or header.size() < 8 or int(header[0]) != _gen:
 		return
 	_sync.push(host_time, bodies)
 	score.dignity = header[1]
@@ -1043,6 +1128,7 @@ func _net_state(host_time: float, header: PackedFloat32Array, bodies: PackedFloa
 	bearers[0].bend = header[4]
 	bearers[1].bend = header[5]
 	room = clampi(int(header[6]), 0, level.rooms.size() - 1)
+	level.apply_illusion_mask(int(header[7]))
 	level.apply_net_state(level_state)
 
 
@@ -1338,6 +1424,19 @@ func _build_hud() -> void:
 		_build_split(root)
 	else:
 		_flash_rects.append(_flash_overlay(root))
+		_build_viewfinder(root)
+	_photo_thumb = TextureRect.new()
+	_photo_thumb.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_photo_thumb.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT
+	_photo_thumb.anchor_left = 1.0
+	_photo_thumb.anchor_right = 1.0
+	_photo_thumb.offset_left = -340
+	_photo_thumb.offset_right = -24
+	_photo_thumb.offset_top = 70
+	_photo_thumb.offset_bottom = 260
+	_photo_thumb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_photo_thumb.modulate.a = 0.0
+	root.add_child(_photo_thumb)
 	_menu = Menu.new()
 	root.add_child(_menu)
 	_menu.start.connect(_on_menu_start)
@@ -1380,6 +1479,107 @@ func _build_split(root: Control) -> void:
 		var dot := _label(panel, 28, Vector2.ZERO)
 		dot.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 		dot.text = "·"
+		_build_viewfinder(panel)
+
+
+## 取景框：四个角的框线 + 一行提示；对准了视错觉拍照点就变成金色
+func _build_viewfinder(parent: Control) -> void:
+	var root := Control.new()
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.visible = false
+	parent.add_child(root)
+	var frame := Panel.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0, 0, 0, 0)
+	sb.border_color = Color.WHITE
+	sb.set_border_width_all(4)
+	sb.set_corner_radius_all(6)
+	frame.add_theme_stylebox_override("panel", sb)
+	frame.anchor_left = 0.08
+	frame.anchor_top = 0.1
+	frame.anchor_right = 0.92
+	frame.anchor_bottom = 0.86
+	frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(frame)
+	for k in 2:  # 上下两条暗边，像相机屏幕
+		var bar := ColorRect.new()
+		bar.color = Color(0, 0, 0, 0.35)
+		bar.anchor_right = 1.0
+		bar.anchor_top = 0.0 if k == 0 else 0.86
+		bar.anchor_bottom = 0.1 if k == 0 else 1.0
+		bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		root.add_child(bar)
+	var hint := _label(root, 26, Vector2.ZERO)
+	hint.anchor_left = 0.0
+	hint.anchor_right = 1.0
+	hint.anchor_top = 0.88
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_vf_frames.append(root)
+	_vf_hints.append(hint)
+
+
+func _toggle_viewfinder(i: int) -> void:
+	if i >= _vf_frames.size() or bearers.size() <= i:
+		return
+	_viewfinder[i] = not _viewfinder[i]
+	var b := bearers[_me() if i == 0 else 1]
+	_frozen_grab[i] = b.want_grab.duplicate()
+	_vf_frames[i].visible = _viewfinder[i]
+
+
+## 第 i 块画面的镜头
+func _screen_cam(i: int) -> Camera3D:
+	return cam_split[i] if mode == "duo" else cam_fp
+
+
+func _update_viewfinders(delta: float) -> void:
+	for i in _vf_frames.size():
+		var cam := _screen_cam(i)
+		cam.fov = lerpf(cam.fov, VIEWFINDER_FOV if _viewfinder[i] else 75.0, 1.0 - exp(-delta * 10.0))
+		if not _viewfinder[i]:
+			continue
+		var h := level.photo_hint(cam.global_transform)
+		var frame: Panel = _vf_frames[i].get_child(0)
+		var sb: StyleBoxFlat = frame.get_theme_stylebox("panel")
+		sb.border_color = Props.GOLD if h.aligned else Color.WHITE
+		sb.set_border_width_all(8 if h.aligned else 4)
+		var shutter := "左键" if i == 0 else "]"
+		_vf_hints[i].text = (h.text if h.text else "取景中") + "　　%s 拍照 · %s 放下相机" % [shutter, "C" if i == 0 else "["]
+
+
+## 按下快门：闪一下、右上角出一张照片；房主（或单机）判断拍没拍对，加入方把镜头位置发给房主判断
+func _shoot(i: int) -> void:
+	var cam := _screen_cam(i)
+	var xf := cam.global_transform
+	if i < _flash_rects.size():
+		_flash_rect(_flash_rects[i])
+	if net_role == "client":
+		_net_photo.rpc_id(1, xf)
+	else:
+		_apply_photo(xf)
+	await RenderingServer.frame_post_draw
+	var vp: Viewport = cam.get_viewport()
+	var img := vp.get_texture().get_image()
+	img.resize(img.get_width() / 4, img.get_height() / 4)
+	_photo_thumb.texture = ImageTexture.create_from_image(img)
+	var tw := create_tween()
+	tw.tween_property(_photo_thumb, "modulate:a", 1.0, 0.15)
+	tw.tween_interval(2.5)
+	tw.tween_property(_photo_thumb, "modulate:a", 0.0, 0.6)
+
+
+func _apply_photo(xf: Transform3D) -> void:
+	if level.try_photo(xf) >= 0:
+		say("咔嚓！这一块被拍成了照片——变成实的了，走过去吧", 4.0)
+	else:
+		say("咔嚓！（这张没拍到什么特别的）", 1.5)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _net_photo(xf: Transform3D) -> void:
+	if _is_host():
+		_apply_photo(xf)
 
 
 func _flash_overlay(parent: Control) -> ColorRect:

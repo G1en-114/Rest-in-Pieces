@@ -26,11 +26,15 @@ signal penalty(amount: float, text: String)
 const HINT_LAYER := 6
 const WALL_H := 1.6
 const WALL_T := 0.3
+const EYE_HEIGHT := 1.67  # 第一人称眼睛离脚下地面多高（抬棺人身体中心 0.87 + 镜头 0.8）
+const PHOTO_POS_TOL := 0.7  # 拍照时眼睛离拍照点多近才算
+const PHOTO_ANGLE_TOL := 7.0  # 镜头朝向和该看的方向差几度以内才算
 
 ## 所有关卡，按选关界面的顺序
 const LEVELS := [
 	{id = "china", country = "中国", title = "殡仪馆的一天", script = "res://scripts/levels/china.gd"},
 	{id = "egypt", country = "埃及", title = "法老的最后一程", script = "res://scripts/levels/egypt.gd"},
+	{id = "mexico", country = "墨西哥", title = "万寿菊之路", script = "res://scripts/levels/mexico.gd"},
 ]
 
 var id := ""
@@ -43,6 +47,10 @@ var kill_y := -10.0
 var game: Node  # main.gd，搭场景前由它填上
 
 var _m := {}  # 各区域的材质
+var prefer_first_person := false  # 主打第一人称的关卡：一进来就是第一人称
+var _illusions: Array = []  # 拍照固定的视错觉：{eye, dir, fill_mesh, fill_cs, grey, fixed}
+var _photo_mat: Material
+var _last_block: MeshInstance3D  # 刚搭的那块地面的外观（给视错觉拿去变灰）
 
 
 static func create(level_id: String) -> Level:
@@ -112,6 +120,116 @@ func debug_text() -> String:
 	return ""
 
 
+# ---------- 拍照固定视错觉 ----------
+
+## 一处拍照固定的视错觉断口（路都沿 -Z 方向走）。
+## 站在 vantage（地面点）用第一人称往 a 看：a 是近处这段路的尽头。远处那段路的起点 b 就在同一条视线上、远 s 倍，
+## 宽和长也放大 s 倍，所以从这里看，两段路严丝合缝地接在一起；换个地方一看就露馅：中间是空的，远处那段更低（或更高）。
+## 在这个角度拍照，a 和 b 之间长出一段灰色的“照片”路面。它正好沿着视线，从拍照点看画面一点没变，但现在是实的了。
+## near_grey：近处那段路要一起变灰的外观。返回远处那段路（far_len 是放大前的长度）的终点
+func _photo_gap(vantage: Vector3, a: Vector3, s: float, width: float, far_len: float, far_mat: Material,
+		near_grey: Array = []) -> Vector3:
+	if _photo_mat == null:
+		# 不受光照影响的平涂灰：在黄昏的暖光里也一眼看得出“这一块是照片”
+		var m := StandardMaterial3D.new()
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.albedo_color = Color(0.62, 0.62, 0.64)
+		_photo_mat = m
+	var eye := vantage + Vector3(0, EYE_HEIGHT, 0)
+	var b := eye + (a - eye) * s
+	var far_w := width * s
+	var end := b + Vector3(0, 0, -far_len * s)
+	_floor(Vector3(b.x - far_w / 2, b.y, b.z), Vector3(b.x + far_w / 2, b.y, end.z), far_mat, 2.0 * s)
+	var grey: Array = near_grey.duplicate()
+	grey.append(_last_block)
+	var fill: Array = _ramp(a, b, width, _photo_mat, 0.3)
+	fill[0].disabled = true
+	fill[1].visible = false
+	var marker := _camera_marker()
+	marker.position = vantage
+	add_child(marker)
+	_illusions.append({eye = eye, dir = (a - eye).normalized(), fill_cs = fill[0], fill_mesh = fill[1], grey = grey,
+		fixed = false, marker = marker})
+	return end
+
+
+## 拍照点的标记：一台架在三脚架上的老式相机，地上画个圈
+func _camera_marker() -> Node3D:
+	var n := Node3D.new()
+	var ring := Art.mesh(Art.cylinder(0.55, 0.55, 0.01, 24), Props.GOLD, Vector3(0, 0.006, 0))
+	n.add_child(ring)
+	n.add_child(Art.mesh(Art.cylinder(0.48, 0.48, 0.012, 24), Color(0.25, 0.2, 0.22), Vector3(0, 0.008, 0)))
+	for k in 3:
+		var a := TAU * k / 3.0
+		var leg := Art.mesh(Art.cylinder(0.015, 0.015, 1.3), Props.WOOD, Vector3(cos(a) * 0.25, 0.62, sin(a) * 0.25 + 0.6))
+		leg.rotation = Vector3(-sin(a) * 0.35, 0, cos(a) * 0.35)
+		n.add_child(leg)
+	n.add_child(Art.mesh(Art.box(Vector3(0.28, 0.2, 0.2)), Props.BLACK, Vector3(0, 1.3, 0.6)))
+	n.add_child(Art.mesh(Art.cylinder(0.06, 0.07, 0.12), Color(0.3, 0.3, 0.32), Vector3(0, 1.3, 0.47)))
+	var tip := _label3d("拍照点：站在圈里往前看", Vector3(0, 2.0, 0.3), 40)
+	tip.modulate = Color(1.0, 0.9, 0.55)
+	n.add_child(tip)
+	return n
+
+
+## 用这个镜头位置拍照：对上了哪处视错觉就把它固定下来，返回它的序号（没对上返回 -1）
+func try_photo(xf: Transform3D) -> int:
+	for i in _illusions.size():
+		var il: Dictionary = _illusions[i]
+		if il.fixed:
+			continue
+		if xf.origin.distance_to(il.eye) < PHOTO_POS_TOL \
+				and rad_to_deg((-xf.basis.z).angle_to(il.dir)) < PHOTO_ANGLE_TOL:
+			fix_illusion(i)
+			return i
+	return -1
+
+
+## 取景框上的提示：离最近一处没拍的视错觉还差多少
+func photo_hint(xf: Transform3D) -> Dictionary:
+	var best := -1
+	var best_d := 12.0
+	for i in _illusions.size():
+		var d: float = xf.origin.distance_to(_illusions[i].eye)
+		if not _illusions[i].fixed and d < best_d:
+			best = i
+			best_d = d
+	if best < 0:
+		return {aligned = false, text = ""}
+	if best_d > PHOTO_POS_TOL:
+		return {aligned = false, text = "走到地上那个相机标记的圈里"}
+	var ang := rad_to_deg((-xf.basis.z).angle_to(_illusions[best].dir))
+	if ang > PHOTO_ANGLE_TOL:
+		return {aligned = false, text = "往前面那段路的尽头看（还差 %d°）" % int(ang)}
+	return {aligned = true, text = "就是这个角度！两段路接上了"}
+
+
+func fix_illusion(i: int) -> void:
+	var il: Dictionary = _illusions[i]
+	if il.fixed:
+		return
+	il.fixed = true
+	il.fill_cs.disabled = false
+	il.fill_mesh.visible = true
+	for m in il.grey:
+		m.material_override = _photo_mat
+	il.marker.visible = false
+
+
+func illusion_mask() -> int:
+	var m := 0
+	for i in _illusions.size():
+		if _illusions[i].fixed:
+			m |= 1 << i
+	return m
+
+
+func apply_illusion_mask(m: int) -> void:
+	for i in _illusions.size():
+		if m & (1 << i):
+			fix_illusion(i)
+
+
 ## 电脑队伍在 "wait:<标签>" 处能不能出发
 func bot_can_go(_tag: String) -> bool:
 	return true
@@ -132,7 +250,8 @@ func _floor(a: Vector3, b: Vector3, material: Material, thick := 0.5, hard := tr
 	var size := Vector3(absf(b.x - a.x), 0.5, absf(b.z - a.z))
 	var center := Vector3((a.x + b.x) / 2, a.y - 0.25, (a.z + b.z) / 2)
 	var body := _collider(size, center, hard)
-	add_child(Art.block(Vector3(size.x, thick, size.z), Vector3(center.x, a.y - thick / 2, center.z), material))
+	_last_block = Art.block(Vector3(size.x, thick, size.z), Vector3(center.x, a.y - thick / 2, center.z), material)
+	add_child(_last_block)
 	return body
 
 
@@ -212,7 +331,7 @@ func _label3d(text: String, pos: Vector3, size: int) -> Label3D:
 
 
 ## 一段斜坡：a、b 是坡面中线低端和高端的点（也可以反过来），width 是坡宽。碰撞 0.5 米厚，外观 thick 厚
-func _ramp(a: Vector3, b: Vector3, width: float, material: Material, thick := 0.5, hard := false) -> void:
+func _ramp(a: Vector3, b: Vector3, width: float, material: Material, thick := 0.5, hard := false) -> Array:
 	var d := b - a
 	var basis := Basis.looking_at(d.normalized(), Vector3.UP)  # 局部 -Z 沿坡面，局部 Y 是坡面法线
 	var center := (a + b) / 2
@@ -229,6 +348,7 @@ func _ramp(a: Vector3, b: Vector3, width: float, material: Material, thick := 0.
 	var mi := Art.block(Vector3.ONE, Vector3.ZERO, material)
 	mi.transform = Transform3D(basis * Basis.from_scale(Vector3(width, thick, d.length())), center - basis.y * thick / 2)
 	add_child(mi)
+	return [cs, mi]
 
 
 ## 一个会转的花圈：抬棺人碰到就加分

@@ -71,7 +71,7 @@ func show_modes(note := "") -> void:
 func show_ip(ip: String) -> void:
 	_page("加入房间", "输入房主的 IP，按 Enter 加入（Esc 返回）")
 	var edit := LineEdit.new()
-	edit.text = ip if ip else Main.join_ip
+	edit.text = ip if ip else Save.last_ip(Main.join_ip)
 	edit.placeholder_text = "房主的 IP"
 	edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	edit.add_theme_font_size_override("font_size", 30)

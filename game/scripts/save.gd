@@ -48,3 +48,14 @@ static func finish(level_id: String, grade: String, full_run: bool) -> bool:
 		cfg.set_value(level_id, "best", grade)
 	cfg.save(PATH)
 	return improved
+
+
+## 上次加入时输入的房主 IP（联机加入界面默认填上它）
+static func last_ip(fallback: String) -> String:
+	return _load().get_value("net", "last_ip", fallback)
+
+
+static func set_last_ip(ip: String) -> void:
+	var cfg := _load()
+	cfg.set_value("net", "last_ip", ip)
+	cfg.save(PATH)
