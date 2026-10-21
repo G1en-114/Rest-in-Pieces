@@ -149,7 +149,10 @@ func show_result(res: Dictionary, level_title: String, has_next: bool, improved:
 	_text("合计", 28, Props.GOLD, grid)
 	var tot := _text(str(int(res.total)), 28, Props.GOLD, grid)
 	tot.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_text("用时 %s · 逝者掉出 %d 次 · 坠落 %d 次" % [Score.clock(res.elapsed), res.drops, res.falls], 20, Color(0.8, 0.78, 0.75))
+	_text("用时 %s · %s" % [Score.clock(res.elapsed), res.get("stats", "")], 20, Color(0.8, 0.78, 0.75))
+	_text(res.get("finds", ""), 20, Color(0.8, 0.78, 0.75))
+	if not res.get("badges", []).is_empty():
+		_text("奖章：" + "  ".join(res.badges.map(func(b: String) -> String: return "【%s】" % b)), 24, Color(1.0, 0.8, 0.4))
 	if not res.full_run:
 		_text("非完整通关（从中间房间开始），不计最好评级", 20, Color(1, 0.7, 0.5))
 	elif improved:

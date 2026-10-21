@@ -269,8 +269,8 @@ func physics_update(g: Node) -> void:
 	for b in g.bearers:
 		var p: Vector3 = b.global_position
 		var on_boat := absf(p.x) < BOAT_W / 2 and absf(p.z - bz) < BOAT_W / 2 and absf(p.y - MY - 0.87) < 0.5
-		b.ground_velocity = Vector3(0, 0, bv) if on_boat else Vector3.ZERO
 		if on_boat:
+			b.ground_velocity += Vector3(0, 0, bv)
 			_say_once("boat", "上船了！站稳，等船靠岸再下")
 	# 铃铛石板：有人踩上去，墓碑就开始倒
 	if _domino_t < 0.0:

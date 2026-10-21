@@ -21,6 +21,7 @@ extends Node3D
 signal bonus(amount: float, text: String)
 signal notice(text: String)
 signal penalty(amount: float, text: String)
+signal found(kind: String, label: String)  # 找到了花圈（"wreath"）、秘密（"secret"）、近路（"shortcut"）
 
 ## 只有第一人称镜头渲染这一层（给第一人称的提示，比如断桥接上时的虚线）
 const HINT_LAYER := 6
@@ -51,6 +52,10 @@ var _m := {}  # 各区域的材质
 var prefer_first_person := false  # 主打第一人称的关卡：一进来就是第一人称
 var _illusions: Array = []  # 拍照固定的视错觉：{eye, dir, fill_mesh, fill_cs, grey, fixed}
 var _photo_mat: Material
+var wreath_total := 0  # 这关一共有几个花圈
+var secret_total := 0
+var _traps: Array[Trap] = []
+var _trap_by_name := {}
 var _view_bridges: Array = []  # 俯视视错觉断桥：{seam, axis, width, yaw, offset, ghosts, hints, aligned, bot}
 var _last_block: MeshInstance3D  # 刚搭的那块地面的外观（给视错觉拿去变灰）
 
@@ -115,6 +120,58 @@ func net_state() -> PackedFloat32Array:
 
 func apply_net_state(_a: PackedFloat32Array) -> void:
 	pass
+
+
+## 联机快照里的关卡状态：所有机关的触发时间 + 关卡自己的 net_state()
+func pack_state() -> PackedFloat32Array:
+	var a := PackedFloat32Array([_traps.size()])
+	for tr in _traps:
+		a.append(tr.t0)
+	a.append_array(net_state())
+	return a
+
+
+func unpack_state(a: PackedFloat32Array) -> void:
+	if a.is_empty():
+		return
+	var n := mini(int(a[0]), _traps.size())
+	for i in n:
+		_traps[i].t0 = a[1 + i]
+	apply_net_state(a.slice(1 + int(a[0])))
+
+
+## 放一个机关；有名字的机关电脑队伍可以在路线里用 "wait:trap:<名字>:<秒>[:<参数>]" 等它
+func _trap(tr: Trap, name := "") -> Trap:
+	tr.level = self
+	tr.trap_name = name
+	add_child(tr)
+	_traps.append(tr)
+	if name != "":
+		_trap_by_name[name] = tr
+	tr.sim(0.0)
+	return tr
+
+
+## 两边每帧都调：按时间摆好所有机关
+func traps_tick(t: float) -> void:
+	for tr in _traps:
+		tr.sim(t)
+
+
+## 房主每帧调：机关判触发、打人
+func traps_update(g: Node, t: float) -> void:
+	for tr in _traps:
+		tr.host(g, t)
+
+
+## "trap:<名字>:<秒>[:<参数>]"：这个机关接下来这么多秒伤不到人
+func trap_safe(spec: String, t: float) -> bool:
+	var parts := spec.split(":")
+	var tr: Trap = _trap_by_name.get(parts[1])
+	if tr == null:
+		push_error("没有叫 %s 的机关" % parts[1])
+		return true
+	return tr.safe(t, parts[2].to_float() if parts.size() > 2 else 2.0, parts[3] if parts.size() > 3 else "")
 
 
 ## 自动测试日志里附带的关卡状态（机关位置之类）
@@ -546,9 +603,36 @@ func _wreath(pos: Vector3, amount := 15.0, radius := 0.9, color := Color(0.16, 0
 		ring.add_child(Art.mesh(Art.sphere(0.09), c, Vector3(cos(a) * 0.37, 0.05, sin(a) * 0.37)))
 	area.add_child(_label3d("%s +%d" % [label, amount], Vector3(0, 0.75, 0), 48))
 	add_child(area)
+	wreath_total += 1
 	var tween := ring.create_tween().set_loops()  # 绑在花圈上：花圈被捡走后补间跟着停
 	tween.tween_property(ring, "rotation:y", TAU, 4.0).from(0.0)
 	area.body_entered.connect(func(body: Node) -> void:
 		if body is Bearer:
 			bonus.emit(amount, "捡到%s！体面 +%d" % [label, amount])
+			found.emit("wreath", label)
 			area.queue_free())
+
+
+## 一块看不见的区域：抬棺人第一次走进去就算发现了秘密（kind = "secret"）或抄了近路（"shortcut"）
+func _discover(kind: String, label: String, center: Vector3, size: Vector3) -> void:
+	var area := Area3D.new()
+	area.position = center
+	var cs := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = size
+	cs.shape = box
+	area.add_child(cs)
+	add_child(area)
+	if kind == "secret":
+		secret_total += 1
+	area.body_entered.connect(func(body: Node) -> void:
+		if body is Bearer:
+			found.emit(kind, label)
+			area.queue_free())
+
+
+## 假墙：看着和真墙一样，其实没有碰撞，能直接穿过去（后面一般藏着秘密）
+func _fake_wall(size: Vector3, pos: Vector3, material: Material = null) -> MeshInstance3D:
+	var mi := Art.block(size, pos, material if material else _m.wall)
+	add_child(mi)
+	return mi

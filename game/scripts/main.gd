@@ -253,6 +253,9 @@ func _ready() -> void:
 				score.dignity -= amount
 				say(text))
 		level.notice.connect(say)
+		level.found.connect(_on_found)
+		score.wreath_total = level.wreath_total
+		score.secret_total = level.secret_total
 	room = 0 if _in_menu or _waiting else clampi(start_room, 0, level.rooms.size() - 1)
 	if not carry.is_empty():
 		score.restore(carry)
@@ -392,7 +395,10 @@ func someone_topdown() -> bool:
 
 ## 房主每帧：关卡机关、推进检查点、坠落判定
 func _update_level() -> void:
+	for b in bearers:
+		b.ground_velocity = Vector3.ZERO  # 船、传送带、移动平台每帧重新加
 	level.physics_update(self)
+	level.traps_update(self, sim_time)
 	var r := level.room_at(coffin.global_position)
 	if r > room and r < level.rooms.size() and coffin.linear_velocity.y > -2.0:  # 正在往下掉的不算进了新房间
 		room = r
@@ -401,7 +407,7 @@ func _update_level() -> void:
 	if coffin.global_position.y < kill or bearers.any(func(b): return b.global_position.y < kill):
 		if started and not finished:
 			score.fall()
-		say("整队掉进了深渊！体面 -30\n从检查点重来")
+		say("整队掉进了深渊！体面 -%d\n从检查点重来" % Score.FALL)
 		_respawn_team(room)
 	elif corpse.torso.global_position.y < kill:
 		score.dignity -= 10.0
@@ -410,6 +416,7 @@ func _update_level() -> void:
 
 
 func _on_room_entered() -> void:
+	score.end_room()
 	say("第 %d 间 · %s" % [room + 1, level.rooms[room].name], 3.0)
 	if started and not finished and mode != "":
 		Save.store_checkpoint(level_id, room, score.snapshot())
@@ -475,6 +482,26 @@ func _spawn_bearer(pos: Vector3, yaw: float) -> void:
 	b.rotation.y = yaw
 	add_child(b)
 	bearers.append(b)
+	b.knocked.connect(func() -> void:
+		if started and not finished and net_role != "client":
+			score.knock())
+
+
+## 关卡里找到了东西：花圈（分数关卡已经通过 bonus 加过了）、秘密、近路
+func _on_found(kind: String, label: String) -> void:
+	if not started or finished:
+		return
+	match kind:
+		"wreath":
+			score.wreaths += 1
+		"secret":
+			score.secrets += 1
+			score.dignity += 5.0
+			say("发现秘密：%s！体面 +5（%d / %d）" % [label, score.secrets, score.secret_total])
+		"shortcut":
+			if not label in score.shortcuts:
+				score.shortcuts.append(label)
+				say("抄近路：%s！" % label)
 
 
 # ---------- 菜单与换关 ----------
@@ -656,6 +683,7 @@ func _physics_process(delta: float) -> void:
 		_control_mouse_player()
 		_apply_remote_input()
 	level.tick(sim_time)
+	level.traps_tick(sim_time)
 	_update_level()
 	_update_rules(delta)
 	if _is_host():
@@ -675,7 +703,7 @@ func _control_mouse_player() -> void:
 	p.face_deadzone = deg_to_rad(free_look) if first_person and p.is_holding() else 0.0
 	p.reach_pitch = look_pitch + HAND_PITCH_OFFSET
 	if _viewfinder[0]:
-		p.want_grab = _frozen_grab[0].duplicate()  # 举着相机时左键是快门，手保持原样
+		p.want_grab.assign(_frozen_grab[0])  # 举着相机时左键是快门，手保持原样
 	else:
 		p.want_grab = [Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT), Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)]
 	p.want_jump = Input.is_physical_key_pressed(KEY_SPACE)
@@ -755,7 +783,10 @@ func _control_p2(delta: float) -> void:
 		b.face_yaw = null
 		b.face_deadzone = 0.0
 	b.reach_pitch = p2_pitch + HAND_PITCH_OFFSET
-	b.want_grab = _frozen_grab[1].duplicate() if _viewfinder[1] else [_held(k.grab_l) > 0.0, _held(k.grab_r) > 0.0]
+	if _viewfinder[1]:
+		b.want_grab.assign(_frozen_grab[1])
+	else:
+		b.want_grab = [_held(k.grab_l) > 0.0, _held(k.grab_r) > 0.0]
 	b.want_jump = _held(k.jump) > 0.0
 
 
@@ -802,8 +833,8 @@ func _update_rules(delta: float) -> void:
 	elif _coffin_falling and (held or absf(coffin.linear_velocity.y) < 0.3):
 		_coffin_falling = false
 		if not held:
-			score.dignity -= 15.0
-			say("棺材摔地上了！体面 -15")
+			score.coffin_drop()
+			say("棺材摔地上了！体面 -%d" % Score.COFFIN_DROP)
 
 	if held and level.on_altar(coffin.global_position, 0.3) and not _altar_hint_shown:
 		_altar_hint_shown = true
@@ -822,9 +853,8 @@ func _update_rules(delta: float) -> void:
 
 func _on_coffin_hit(body: Node) -> void:
 	if started and not finished and body is StaticBody3D and body.is_in_group("hard") \
-			and coffin.linear_velocity.length() > 1.2:
-		score.dignity -= 5.0
-		say("砰！")
+			and coffin.linear_velocity.length() > 1.2 and score.hit():
+		say("砰！体面 -%d" % Score.HIT)
 
 
 func say(text: String, seconds := 2.5) -> void:
@@ -878,6 +908,7 @@ func _process(delta: float) -> void:
 	if net_role == "client" and not _waiting:
 		_sync.apply(_sync_bodies())
 		level.tick(_sync.render_time())
+		level.traps_tick(_sync.render_time())
 		_max_step = maxf(_max_step, coffin.global_position.distance_to(_last_coffin_pos))
 		_last_coffin_pos = coffin.global_position
 	cam_yaw = lerpf(cam_yaw, cam_yaw_target, 1.0 - exp(-delta * 6.0))
@@ -1105,7 +1136,7 @@ func _apply_remote_input() -> void:
 func _send_state() -> void:
 	var header := PackedFloat32Array([_gen, score.dignity, score.elapsed, cam_yaw_target, bearers[0].bend, bearers[1].bend,
 		room, level.illusion_mask()])
-	_net_state.rpc(sim_time, header, NetSync.pack(_sync_bodies()), level.net_state())
+	_net_state.rpc(sim_time, header, NetSync.pack(_sync_bodies()), level.pack_state())
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
@@ -1129,7 +1160,7 @@ func _net_state(host_time: float, header: PackedFloat32Array, bodies: PackedFloa
 	bearers[1].bend = header[5]
 	room = clampi(int(header[6]), 0, level.rooms.size() - 1)
 	level.apply_illusion_mask(int(header[7]))
-	level.apply_net_state(level_state)
+	level.unpack_state(level_state)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -1250,7 +1281,8 @@ func _drive_bot() -> void:
 	var wp: Variant = _bot_path[_bot_wp]
 	var dir := Vector3.ZERO
 	if wp is String:
-		if bot_nowait or level.bot_can_go(wp.trim_prefix("wait:")):
+		var tag: String = wp.trim_prefix("wait:")
+		if bot_nowait or (level.trap_safe(tag, sim_time) if tag.begins_with("trap:") else level.bot_can_go(tag)):
 			_bot_wp += 1
 	elif wp is Dictionary:
 		if level.bot_can_go(wp.until):

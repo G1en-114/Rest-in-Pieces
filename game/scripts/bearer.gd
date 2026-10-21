@@ -5,6 +5,8 @@ extends RigidBody3D
 ## 手拉东西的力会等量反作用到身体上，所以棺材越重、越歪，人就越站不稳。
 ## 本身不读键盘：由 main.gd 里的玩家、电脑队友或测试脚本每帧填写下面这几个“意图”。
 
+signal knocked  # 被机关撞飞了（计分用）
+
 const MODEL := preload("res://assets/bearer.glb")
 ## 第一人称时每个玩家要对自己的镜头隐身、只露出手，所以每人占两个渲染层：
 ## P1 身体在第 2 层、手在第 4 层；P2 身体在第 3 层、手在第 5 层。固定视角不渲染 4、5 层。
@@ -264,6 +266,7 @@ func _try_grab(i: int) -> void:
 
 ## 被机关撞飞：松开手里的东西，朝 velocity 飞出去，翻着跟头晕 seconds 秒
 func knock(velocity: Vector3, seconds := 1.3) -> void:
+	knocked.emit()
 	release_all()
 	stun = seconds
 	linear_velocity = velocity

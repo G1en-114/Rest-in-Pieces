@@ -1,5 +1,7 @@
 extends Level
-## 第一关（教学关）「殡仪馆的一天」：停棺间 → L 形走廊（花圈）→ 视错觉断桥 → 灵堂。
+## 第一关（教学关）「殡仪馆的一天」：入殓间 → 告别厅（三条过道：香炉摆锤 / 天降花圈和假地板 / 倒着走的红毯）
+## → 纸扎仓库（一波波的推墙和压纸机，或者踩弹簧板上二楼绕过去）→ 停尸间（弹出来的冰柜抽屉）
+## → L 形走廊（推车、湿地板）→ 视错觉断桥 → 灵堂（灵台第一次会躲开）。
 ##
 ## 断桥的原理（纪念碑谷式）：上层桥头和下层桥尾在空间里是错开的（差 BRIDGE_OFFSET），
 ## 但偏移方向正好沿着 ALIGN_YAW 视角的视线，所以固定视角转到这个角度时，画面上两段桥连成一条。
@@ -10,6 +12,19 @@ extends Level
 ## 会挡路的道具另外用 _solid() 加一个看不见的碰撞盒。
 
 const COFFIN_START := Vector3(0, 1.32, 0)
+const START := Vector3(0, 0, 40.0)  # 入殓间里停棺架的位置
+const START_Z := [44.0, 36.0]  # 入殓间的南、北墙
+const HALL1_Z := [34.0, 18.0]  # 告别厅的南、北墙
+const AISLE_X := [2.0, 5.0]  # 座椅区（两边对称）占的 |x| 范围：中间过道 |x| < 2，两边过道 |x| > 5
+const CHAIRS_Z := [21.4, 30.6]
+const CENSERS := [29.0, 26.0, 23.0]
+const FAKE1_Z := [25.5, 23.9]  # 西边过道的假地板
+const SECRET1_Z := [19.2, 20.8]  # 西墙上那段假墙
+const WARE_Z := [18.0, 4.0]  # 纸扎仓库的南、北边
+const WARE_INNER := [6.2, 16.0]  # 通道和货架区之间那道隔墙的范围
+const MEZZ_H := 2.8  # 二楼货架走廊的高度
+const MEZZ_Z := [16.5, 7.5]
+const WAVE_PERIOD := 4.0
 const GOAL := Vector3(-29, -4.63, -8.69)
 const ALIGN_YAW := 135.0  # 固定视角转到这个角度，断桥才接得上
 const SEAM_X := -16.0  # 上层桥头的接缝
@@ -37,20 +52,29 @@ var _wet_noticed := false
 var _trolley_said := -10.0
 var _time := 0.0
 var _aligned := false
+var _altar: AnimatableBody3D
+var _altar_t0 := -1.0  # 灵台开始躲的时间
 
 
 func _init() -> void:
 	id = "china"
 	title = "殡仪馆的一天"
-	par_time = 60.0
+	par_time = 240.0
 	goal_pos = GOAL
 	rooms = [
-		{name = "停棺间", spawn = Vector3.ZERO, lift = COFFIN_START.y, yaw = 0.0, path = [Vector3(0, 0, -6)]},
+		{name = "入殓间", spawn = START, lift = COFFIN_START.y, yaw = 0.0, path = [Vector3(0, 0, 33.0)]},
+		{name = "告别厅", spawn = Vector3(0, 0, 32.6), yaw = 0.0,
+			path = [Vector3(7.0, 0, 32.4), Vector3(7.0, 0, 20.0), Vector3(0, 0, 19.8), Vector3(0, 0, 17.6)]},
+		{name = "纸扎仓库", spawn = Vector3(0, 0, 17.3), yaw = 0.0,
+			path = ["wait:trap:p0:2.1", Vector3(0, 0, 3.4)]},
+		{name = "停尸间", spawn = Vector3(0, 0, 2.6), yaw = 0.0,
+			path = [Vector3(0, 0, 3.0), "wait:trap:drawer:2.6", Vector3(0, 0, -6)]},
 		{name = "走廊", spawn = Vector3(0, 0, -5.0), yaw = 0.0,
 			path = [Vector3(0, 0, -12.4), Vector3(-3.6, 0, -12.4), "wait:trolley", Vector3(-10.8, 0, -12.4)]},
 		{name = "断桥", spawn = CHECKPOINT_UPPER, yaw = 0.0,
 			path = [Vector3(-14.4, 0, -12.4), "wait:align", {dir = Vector3.LEFT, until = "crossed"}]},
-		{name = "灵堂", spawn = CHECKPOINT_LOWER, yaw = 0.0, path = [Vector3(-23, 0, -8.69), Vector3(-29, 0, -8.69)]},
+		{name = "灵堂", spawn = CHECKPOINT_LOWER, yaw = 0.0,
+			path = [Vector3(-23, 0, -8.69), Vector3(-25.6, 0, -8.69), "wait:altar", Vector3(-29, 0, -8.69)]},
 	]
 
 
@@ -70,7 +94,11 @@ func _ready() -> void:
 		grout_color = Color(0.5, 0.62, 0.45), side_color = Color(0.7, 0.62, 0.6), tile = 50.0})
 	_m.wall = Art.wall_mat()
 	_m.hall_wall = Art.wall_mat({lower = Color(0.24, 0.21, 0.24), trim = Color(0.78, 0.62, 0.3)})
+	_build_start()
+	_build_farewell_hall()
+	_build_warehouse()
 	_build_room_1()
+	_build_morgue()
 	_build_corridor()
 	_build_garden()
 	_build_bridge()
@@ -78,21 +106,31 @@ func _ready() -> void:
 	_build_sky_decor()
 
 
-## 下层（过了桥）是灵堂；上层按位置分停棺间、走廊、断桥
+## 下层（过了桥）是灵堂；上层按位置分
 func room_at(p: Vector3) -> int:
 	if p.y < -2.0:
 		# 只有真的站在下层桥尾 / 灵堂里才算；从上层桥头掉下去半路也会低于 -2
-		return 3 if p.x < SEAM_X + BRIDGE_OFFSET.x + 0.5 and p.y > BRIDGE_OFFSET.y - 1.0 else 2
-	if p.x < -10.0 and p.z < -10.8:
-		return 2
-	if p.z < -4.0:
+		return 6 if p.x < SEAM_X + BRIDGE_OFFSET.x + 0.5 and p.y > BRIDGE_OFFSET.y - 1.0 else 5
+	if p.z > HALL1_Z[0] + 0.5:
+		return 0
+	if p.z > WARE_Z[0]:
 		return 1
-	return 0
+	if p.z > WARE_Z[1] + 0.5:
+		return 2
+	if p.x < -10.0 and p.z < -10.8:
+		return 5
+	if p.z < -4.0:
+		return 4
+	return 3
 
 
 ## 关卡里随时间动的东西（推车）
 func tick(t: float) -> void:
 	_time = t
+	if _altar:
+		var off := _altar_offset(t)
+		_altar.position = GOAL + off
+		goal_pos = GOAL + off
 	var period := 2.0 * (TROLLEY_MOVE + TROLLEY_PARK)
 	var ph := fposmod(t, period)
 	var z: float
@@ -119,11 +157,13 @@ func bot_can_go(tag: String) -> bool:
 			return _aligned
 		"crossed":
 			return game.coffin.global_position.y < -2.0
+		"altar":  # 等灵台躲完回来
+			return _altar_t0 >= 0.0 and _time - _altar_t0 > 4.4
 	return true
 
 
 func net_state() -> PackedFloat32Array:
-	return PackedFloat32Array([1.0 if _aligned else 0.0])
+	return PackedFloat32Array([1.0 if _aligned else 0.0, _altar_t0])
 
 
 ## 加入方要看得见第一人称的虚线提示
@@ -131,6 +171,8 @@ func apply_net_state(a: PackedFloat32Array) -> void:
 	if a.size() > 0 and (a[0] > 0.5) != _aligned:
 		_aligned = a[0] > 0.5
 		set_bridge(_aligned)
+	if a.size() > 1:
+		_altar_t0 = a[1]
 
 
 ## 断桥（“信任之桥”）：有人俯视、并且视角转对了，幽灵地面就打开；之后只要还有人站在接缝上，
@@ -138,6 +180,9 @@ func apply_net_state(a: PackedFloat32Array) -> void:
 ## 谁走过接缝，就把谁连同他抓着的东西一起平移到另一段桥上。平移方向正好沿着俯视的视线，
 ## 所以俯视画面上看不出任何跳动；第一人称看到的永远是断桥，过桥时闪一下白光遮住瞬移。
 func physics_update(g: Node) -> void:
+	if _altar_t0 < 0.0 and g.coffin.global_position.y < -2.0 and g.coffin.global_position.x < -25.0:
+		_altar_t0 = _time
+		notice.emit("灵台：等一下！我还没准备好！")
 	var view_ok: bool = g.someone_topdown() and absf(wrapf(g.cam_yaw - ALIGN_YAW, -180.0, 180.0)) < 6.0
 	var locked: bool = _aligned and g.team_bodies().any(func(b): return on_ghost(b.global_position))
 	var aligned: bool = view_ok or locked
@@ -182,18 +227,204 @@ static func on_ghost(p: Vector3) -> bool:
 	return p.y > BRIDGE_OFFSET.y - 2.0 and p.x > lower_start - 0.5 and p.x < lower_start + GHOST_LEN + 0.5 		and p.z > z0 + BRIDGE_OFFSET.z and p.z < z1 + BRIDGE_OFFSET.z
 
 
-# ---------- 1 停棺间 ----------
+# ---------- 0 入殓间（起点）----------
+
+func _build_start() -> void:
+	_floor(Vector3(-4, 0, START_Z[1]), Vector3(4, 0, START_Z[0]), _m.room, BUILDING_THICK)
+	_wall_x(START_Z[0], -4.0, 4.0)
+	_wall_z(4.0, START_Z[1], START_Z[0])
+	_wall_z(-4.0, START_Z[1], START_Z[0])
+	_wall_x(START_Z[1], -4.0, -1.6)
+	_wall_x(START_Z[1], 1.6, 4.0)
+	for x in [-0.7, 0.7]:  # 停棺架
+		_box(Vector3(0.3, 1.09, 0.7), Vector3(x, 0.545, START.z), Color(0.18, 0.18, 0.2), false)
+		add_child(Art.mesh(Art.box(Vector3(0.34, 0.04, 0.74)), Props.GOLD, Vector3(x, 1.07, START.z)))
+	add_child(Art.block(Vector3(0.12, 1.0, 3.4), Vector3(-3.9, WALL_H + 0.5, START.z), Art.mat(Props.WHITE)))
+	_put(Props.couplet("一路走好", "抬稳别晃", "体面要紧", 2.4), Vector3(-3.82, 0, START.z), PI / 2)
+	_put(Props.wreath_stand("沉痛悼念", "早登极乐"), Vector3(-3.2, 0, START.z + 2.3), PI / 2)
+	_put(Props.wreath_stand("音容宛在", "一路顺风"), Vector3(-3.2, 0, START.z - 2.3), PI / 2)
+	_put(Props.duty_desk(), Vector3(3.1, 0, START.z + 2.6), -PI / 2)
+	_solid(Vector3(0.6, 0.8, 1.2), Vector3(3.1, 0.4, START.z + 2.6))
+	for p in [Vector3(3.4, 0, 3.4), Vector3(-3.4, 0, 3.4), Vector3(3.4, 0, -1.2)]:
+		_put(Props.chrysanthemum_pot(p.x > 0), p + Vector3(0, 0, START.z))
+	_box(Vector3(3.2, 0.12, 0.2), Vector3(0, 0.06, START_Z[1]), Color(0.36, 0.1, 0.08), false)  # 门槛
+	_floor(Vector3(-1.6, 0, HALL1_Z[0]), Vector3(1.6, 0, START_Z[1]), _m.corridor, BUILDING_THICK)
+	_wall_z(1.6, HALL1_Z[0], START_Z[1])
+	_wall_z(-1.6, HALL1_Z[0], START_Z[1])
+	_lamp(Vector3(0, 3.2, START.z), 0.9, 8.0)
+	_sign("抓住把手，把棺材抬出去", Vector3(0, 3.4, START_Z[1] + 0.4))
+
+
+# ---------- 1 告别厅 ----------
+
+## 三条过道：中间荡着大香炉，西边头顶挂着花圈（走到下面就砸）、还有一块假地板，东边是往回走的红毯
+func _build_farewell_hall() -> void:
+	var z0: float = HALL1_Z[0]
+	var z1: float = HALL1_Z[1]
+	var hw := 9.0
+	# 地面：西边过道中间那块是假地板
+	_floor(Vector3(-hw, 0, z0), Vector3(hw, 0, FAKE1_Z[0]), _m.room, BUILDING_THICK)
+	_floor(Vector3(-hw, 0, FAKE1_Z[1]), Vector3(hw, 0, z1), _m.room, BUILDING_THICK)
+	_floor(Vector3(-AISLE_X[0], 0, FAKE1_Z[0]), Vector3(hw, 0, FAKE1_Z[1]), _m.room, BUILDING_THICK)
+	_trap(Traps.FakeFloor.new(Vector3(-hw, 0, FAKE1_Z[0]), Vector3(-AISLE_X[0], 0, FAKE1_Z[1]), _m.room, BUILDING_THICK))
+	_wall_x(z0, -hw, -1.6)
+	_wall_x(z0, 1.6, hw)
+	_wall_x(z1, -hw, -1.6)
+	_wall_x(z1, 1.6, hw)
+	_wall_z(hw, z1, z0)
+	_wall_z(-hw, z1, SECRET1_Z[0])
+	_wall_z(-hw, SECRET1_Z[1], z0)
+	_fake_wall(Vector3(WALL_T, WALL_H, SECRET1_Z[1] - SECRET1_Z[0]), Vector3(-hw, WALL_H / 2, (SECRET1_Z[0] + SECRET1_Z[1]) / 2))
+	# 两大片座椅把厅分成三条过道
+	for s in [-1.0, 1.0]:
+		var cx: float = s * (AISLE_X[0] + AISLE_X[1]) / 2
+		var w: float = AISLE_X[1] - AISLE_X[0]
+		_solid(Vector3(w, 1.0, CHAIRS_Z[1] - CHAIRS_Z[0]), Vector3(cx, 0.5, (CHAIRS_Z[0] + CHAIRS_Z[1]) / 2))
+		var z: float = CHAIRS_Z[1] - 0.5
+		while z > CHAIRS_Z[0]:
+			add_child(Art.mesh(Art.box(Vector3(w, 0.45, 0.5)), Color(0.32, 0.2, 0.14), Vector3(cx, 0.22, z)))
+			add_child(Art.mesh(Art.box(Vector3(w, 0.6, 0.08)), Color(0.28, 0.17, 0.12), Vector3(cx, 0.75, z + 0.25)))
+			z -= 1.1
+	# 中间过道：三个大香炉来回荡
+	for k in CENSERS.size():
+		var z: float = CENSERS[k]
+		add_child(Art.block(Vector3(4.4, 0.25, 0.25), Vector3(0, 4.7, z), Art.mat(Props.WOOD)))
+		for s in [-1.0, 1.0]:
+			add_child(Art.block(Vector3(0.2, 4.7, 0.2), Vector3(s * 2.1, 2.35, z), Art.mat(Props.WOOD)))
+		var head := Node3D.new()
+		var burner := Props.incense_burner()
+		burner.scale = Vector3.ONE * 2.4
+		burner.position.y = -0.45
+		head.add_child(burner)
+		var tr := Traps.Pendulum.new(Vector3(0, 4.6, z), 3.7, Vector3.RIGHT, 0.62, 3.2, k * 0.33, head, 0.55)
+		tr.text = "被大香炉抡飞了！"
+		_trap(tr, "censer%d" % k)
+	# 西边过道：头顶挂着三个花圈，人还没走到下面就砸下来
+	for z in [29.6, 27.0, 22.4]:
+		var w := Props.wreath_stand()
+		var dr := Traps.Dropper.new(w, Vector3(-7.0, 4.2, z), 0.0, 0.9)
+		dr.triggered_by(Vector3(-7.0, 1.0, z + 1.6), Vector3(2.0, 1.5, 0.6))
+		dr.text = "花圈从天而降！"
+		_trap(dr)
+	# 东边过道：红毯是往回走的传送带
+	var conv := Traps.Conveyor.new(Vector3(AISLE_X[1], 0, CHAIRS_Z[0]), Vector3(hw, 0, CHAIRS_Z[1]), Vector3(0, 0, 1.6),
+		Color(0.6, 0.08, 0.08), Color(0.9, 0.7, 0.3))
+	_trap(conv)
+	_sign("红毯往回走\n使劲往前抬", Vector3(7.0, 2.6, CHAIRS_Z[1] + 0.6))
+	_sign("这边近\n（真的）", Vector3(-7.0, 2.6, CHAIRS_Z[1] + 0.6))
+	_sign("香炉别碰", Vector3(0, 3.2, CHAIRS_Z[1] + 0.8))
+	# 北墙：遗像和白花；遗像西边那段墙是假的，后面一个小间
+	_put(Props.portrait(), Vector3(-5.5, 1.6, z1 + 0.25), 0.0)
+	_put(Props.flower_wall(3.0), Vector3(-5.5, 0, z1 + 0.6), 0.0)
+	_solid(Vector3(3.0, 1.2, 0.6), Vector3(-5.5, 0.6, z1 + 0.6))
+	_floor(Vector3(-hw - 2.4, 0, SECRET1_Z[0] - 0.4), Vector3(-hw, 0, SECRET1_Z[1] + 0.4), _m.room, BUILDING_THICK)
+	_wall_z(-hw - 2.4, SECRET1_Z[0] - 0.4, SECRET1_Z[1] + 0.4)
+	_wall_x(SECRET1_Z[0] - 0.4, -hw - 2.4, -hw)
+	_wall_x(SECRET1_Z[1] + 0.4, -hw - 2.4, -hw)
+	_wreath(Vector3(-hw - 1.2, 0, (SECRET1_Z[0] + SECRET1_Z[1]) / 2), 15.0, 0.5)
+	_discover("secret", "遗像后面的小间", Vector3(-hw - 1.2, 1.0, (SECRET1_Z[0] + SECRET1_Z[1]) / 2), Vector3(2.0, 2.0, 2.0))
+	_wreath(Vector3(0, 0, z0 - 1.6), 10.0, 0.5)
+	_wreath(Vector3(-7.0, 0, 25.4), 10.0, 0.5)  # 假地板正上方
+	for x in [-6.0, 6.0]:
+		_lamp(Vector3(x, 3.6, (z0 + z1) / 2), 0.8, 10.0)
+	_lamp(Vector3(0, 3.6, (z0 + z1) / 2), 0.8, 10.0)
+
+
+# ---------- 2 纸扎仓库 ----------
+
+## 中间一条通道：两边墙里周期性冲出纸扎压板，中间一台压纸机。通道西边的货架区有一块弹簧板，
+## 能把整队弹上二楼货架走廊，从上面绕过所有压板（近路）
+func _build_warehouse() -> void:
+	var z0: float = WARE_Z[0]
+	var z1: float = WARE_Z[1]
+	_floor(Vector3(-8, 0, z0), Vector3(2, 0, z1), _m.corridor, BUILDING_THICK)
+	_wall_z(2.0, z1, z0)
+	_wall_z(-8.0, z1, z0)
+	_wall_x(z1, -8.0, -4.0)
+	_wall_z(-2.0, WARE_INNER[1], WARE_INNER[0], 0.0, null, 2.6)  # 通道和货架区之间的隔墙
+	_wall_x(13.9, -8.0, -2.0, 0.0, null, 2.2)  # 货架区一楼封死：只能从弹簧板上二楼
+	var paper := Art.mat(Color(0.95, 0.92, 0.85))
+	var red := Art.mat(Color(0.75, 0.15, 0.12))
+	# 通道里的机关：一波一波按顺序推，跟着节奏走就能一口气过去
+	var specs := [[14.6, 1.0, 0.0], [11.8, -1.0, 0.95], [6.8, 1.0, 2.4]]  # [z, 从哪边冲出来（1 = 东墙）, 比第一个晚几秒]
+	for k in specs.size():
+		var sp: Array = specs[k]
+		var side: float = sp[1]
+		var tr := Traps.Piston.new(Vector3(side * 2.7, 0.9, sp[0]), Vector3(1.4, 1.8, 2.0), Vector3(-side, 0, 0), 2.4,
+			WAVE_PERIOD, -float(sp[2]) / WAVE_PERIOD, paper if k % 2 == 0 else red)
+		tr.text = "被纸扎压板推飞了！"
+		_trap(tr, "p%d" % k)
+	var cr := Traps.Crusher.new(Vector3(0, 0, 9.2), Vector3(3.8, 1.0, 1.2), 3.0, WAVE_PERIOD, -0.36,
+		Art.mat(Color(0.35, 0.33, 0.36)))
+	cr.text = "被压纸机拍扁了！"
+	_trap(cr, "crusher")
+	add_child(Art.block(Vector3(4.0, 0.3, 1.4), Vector3(0, 4.6, 9.2), Art.mat(Props.BLACK)))
+	# 货架区：弹簧板 → 二楼货架走廊 → 一摞纸箱 → 下来回到通道尽头
+	var spring := Traps.Spring.new(Vector3(-3.2, 0, 15.4), Vector2(1.3, 1.3), Vector3(-2.6, 8.6, -0.8))
+	spring.text = "嘣——整队被弹上了二楼！"
+	_trap(spring)
+	_sign("弹簧板\n（请勿抬棺踩踏）", Vector3(-3.2, 2.2, 16.4))
+	_floor(Vector3(-8, MEZZ_H, MEZZ_Z[0]), Vector3(-4.6, MEZZ_H, MEZZ_Z[1]), _m.corridor, 0.4)
+	_floor(Vector3(-8, 1.4, MEZZ_Z[1]), Vector3(-4.6, 1.4, MEZZ_Z[1] - 1.5), _m.corridor, 1.4)  # 一摞纸箱
+	_wall_x(MEZZ_Z[0], -8.0, -4.6, MEZZ_H, null, 1.0)
+	for z in [MEZZ_Z[0] - 1.0, (MEZZ_Z[0] + MEZZ_Z[1]) / 2, MEZZ_Z[1] + 1.0]:
+		add_child(Art.block(Vector3(0.2, MEZZ_H, 0.2), Vector3(-4.7, MEZZ_H / 2, z), Art.mat(Props.WOOD)))
+	_discover("shortcut", "二楼货架", Vector3(-6.3, MEZZ_H + 1.0, (MEZZ_Z[0] + MEZZ_Z[1]) / 2), Vector3(3.0, 2.0, 2.0))
+	_wreath(Vector3(-6.3, MEZZ_H, MEZZ_Z[0] - 2.0), 10.0, 0.5)
+	var horse := Props.paper_car()
+	var dr := Traps.Dropper.new(horse, Vector3(-6.3, 4.8, 10.0), MEZZ_H, 1.0)
+	dr.triggered_by(Vector3(-6.3, MEZZ_H + 1.0, 11.4), Vector3(1.8, 1.2, 0.5))
+	dr.text = "纸扎轿车从天而降！"
+	_trap(dr)
+	# 货架区里堆满纸扎（只是看的）
+	for z in [13.0, 10.5, 8.0]:
+		_put(Props.paper_house(), Vector3(-6.4, 0, z), PI / 2)
+	_solid(Vector3(3.0, 1.6, 7.0), Vector3(-6.4, 0.8, 10.5))
+	_put(Props.paper_kid(), Vector3(-3.0, 0, 7.5), -PI / 2)
+	_lamp(Vector3(0, 3.6, 12.0), 0.8, 9.0)
+	_lamp(Vector3(-6.0, 3.6, 10.0), 0.6, 8.0)
+	_sign("跟着节奏走", Vector3(0, 3.0, z1 - 0.8))
+
+
+# ---------- 3 停尸间里弹出来的冰柜抽屉 ----------
+
+func _build_morgue() -> void:
+	var steel := Art.mat(Color(0.7, 0.74, 0.78))
+	for z in [1.6, -1.6]:
+		add_child(Art.block(Vector3(0.1, 1.2, 1.2), Vector3(3.92, 1.0, z), Art.mat(Color(0.5, 0.52, 0.55))))
+		var tr := Traps.Piston.new(Vector3(5.0, 1.1, z), Vector3(2.0, 0.7, 1.1), Vector3.LEFT, 3.4, 5.0, 0.0, steel)
+		tr.text = "冰柜抽屉弹出来了！"
+		_trap(tr, "drawer")
+	_sign("冰柜会自己弹开\n别靠东墙", Vector3(2.0, 2.4, 3.4))
+
+
+# ---------- 灵台：第一次走近时往旁边滑开 ----------
+
+func _altar_offset(t: float) -> Vector3:
+	if _altar_t0 < 0.0:
+		return Vector3.ZERO
+	var s := t - _altar_t0
+	var away := Vector3(0, 0, 1.9)
+	if s < 0.5:
+		return away * smoothstep(0.0, 1.0, s / 0.5)
+	if s < 3.5:
+		return away
+	if s < 4.3:
+		return away * (1.0 - smoothstep(0.0, 1.0, (s - 3.5) / 0.8))
+	return Vector3.ZERO
+
+
+# ---------- 3 停尸间（原来的停棺间）----------
 
 func _build_room_1() -> void:
 	_floor(Vector3(-4, 0, -4), Vector3(4, 0, 4), _m.room, BUILDING_THICK)
-	_wall_x(4.0, -4.0, 4.0)
+	_wall_x(4.0, -4.0, -1.6)
+	_wall_x(4.0, 1.6, 4.0)
 	_wall_z(4.0, -4.0, 4.0)
 	_wall_z(-4.0, -4.0, 4.0)
 	_wall_x(-4.0, -4.0, -1.6)
 	_wall_x(-4.0, 1.6, 4.0)
-	for x in [-0.7, 0.7]:  # 停棺架
-		_box(Vector3(0.3, 1.09, 0.7), Vector3(x, 0.545, 0), Color(0.18, 0.18, 0.2), false)
-		add_child(Art.mesh(Art.box(Vector3(0.34, 0.04, 0.74)), Props.GOLD, Vector3(x, 1.07, 0)))
+	_box(Vector3(3.2, 0.12, 0.2), Vector3(0, 0.06, 4.0), Color(0.36, 0.1, 0.08), false)  # 南门的门槛
 
 	# 西墙：加高一块白色背景板，挂挽联；前面是供桌、香炉
 	add_child(Art.block(Vector3(0.12, 1.0, 3.4), Vector3(-3.9, WALL_H + 0.5, 0), Art.mat(Props.WHITE)))
@@ -209,9 +440,7 @@ func _build_room_1() -> void:
 	_put(Props.wreath_stand("沉痛悼念", "早登极乐"), Vector3(-3.2, 0, 2.3), PI / 2)
 	_put(Props.wreath_stand("音容宛在", "一路顺风"), Vector3(-3.2, 0, -2.3), PI / 2)
 	_put(Props.wreath_stand(), Vector3(2.9, 0, -3.3), -PI / 6)
-	_put(Props.duty_desk(), Vector3(3.1, 0, 2.6), -PI / 2)
-	_solid(Vector3(0.6, 0.8, 1.2), Vector3(3.1, 0.4, 2.6))
-	for p in [Vector3(3.4, 0, 3.4), Vector3(-3.4, 0, 3.4), Vector3(3.4, 0, -1.2), Vector3(-2.3, 0, -3.4)]:
+	for p in [Vector3(-3.4, 0, 3.4), Vector3(3.4, 0, -3.4), Vector3(-2.3, 0, -3.4)]:
 		_put(Props.chrysanthemum_pot(p.x > 0), p)
 
 	# 门槛：要抬脚迈过去（抬棺人会自己迈上矮台阶）
@@ -221,12 +450,12 @@ func _build_room_1() -> void:
 		add_child(Art.block(Vector3(0.3, 2.8, 0.36), Vector3(x, 1.4, -4.0), Art.mat(Color(0.45, 0.12, 0.1))))
 	add_child(Art.block(Vector3(4.6, 0.26, 0.42), Vector3(0, 2.9, -4.0), Art.mat(Props.BLACK)))
 	add_child(Art.block(Vector3(1.4, 0.4, 0.06), Vector3(0, 2.6, -4.2), Art.mat(Props.BLACK)))
-	_put(Art.text("停棺间", 72, Props.GOLD, Vector3(0, 2.6, -4.235)), Vector3.ZERO, PI)
+	_put(Art.text("停尸间", 72, Props.GOLD, Vector3(0, 2.6, -4.235)), Vector3.ZERO, PI)
 	_put(Art.text("出 口", 56, Props.GOLD, Vector3(0, 2.6, -3.79)), Vector3.ZERO)
 	for x in [-2.1, 2.1]:
 		_put(Props.lantern(), Vector3(x, 2.77, -4.0))
 	_lamp(Vector3(0, 3.2, 0), 0.9, 8.0)
-	_sign("抓住把手，把棺材抬出去", Vector3(0, 3.4, -3.6))
+	_sign("往北走，去灵堂", Vector3(0, 3.4, -3.6))
 
 
 # ---------- 2 L 形走廊 ----------
@@ -245,6 +474,15 @@ func _build_corridor() -> void:
 	# 偏离主路的小花圈：判定范围小，得专门绕过去拿
 	_wreath(Vector3(1.2, 0, -9.7), 10.0, 0.4)  # 湿地板边上
 	_wreath(Vector3(TROLLEY_X, 0, -10.2), 10.0, 0.4)  # 北边杂物间里：趁推车停在南边时冲进去拿
+	# 两个小花圈都是坑：湿地板边上那个底下藏着地刺，杂物间里那个头顶挂着灯笼
+	var spikes := Traps.Spikes.new(Vector3(1.0, 0, -9.7), Vector2(1.0, 1.4))
+	spikes.triggered_by(Vector3(1.1, 1.0, -9.7), Vector3(0.45, 1.0, 0.6), 0.15)
+	spikes.text = "花圈底下有刺！"
+	_trap(spikes)
+	var lantern := Props.lantern()
+	var dr := Traps.Dropper.new(lantern, Vector3(TROLLEY_X, 2.6, -10.2), 0.0, 0.6)
+	dr.text = "灯笼掉下来了！"
+	_trap(dr)
 	_build_steps()
 	_build_wet_floor()
 	_build_trolley()
@@ -450,9 +688,19 @@ func _build_hall() -> void:
 	_wall_z(-24.0, zc + BRIDGE_WIDTH / 2, zc + 4, y, _m.hall_wall)
 
 	# 灵台：深红木台，金边
-	_box(Vector3(2.6, 0.4, 1.4), GOAL + Vector3(0, 0.2, 0), Color(0.36, 0.08, 0.07), false)
-	add_child(Art.mesh(Art.box(Vector3(2.64, 0.04, 1.44)), Props.GOLD, GOAL + Vector3(0, 0.4, 0)))
-	add_child(Art.mesh(Art.box(Vector3(0.02, 0.3, 1.0)), Props.GOLD, GOAL + Vector3(1.31, 0.2, 0)))
+	# 会躲的灵台：整张台子（连同上面的蜡烛）是一个会动的物体
+	_altar = AnimatableBody3D.new()
+	var acs := CollisionShape3D.new()
+	var abox := BoxShape3D.new()
+	abox.size = Vector3(2.6, 0.4, 1.4)
+	acs.shape = abox
+	acs.position.y = 0.2
+	_altar.add_child(acs)
+	_altar.add_child(Art.mesh(Art.box(Vector3(2.6, 0.4, 1.4)), Color(0.36, 0.08, 0.07), Vector3(0, 0.2, 0)))
+	_altar.add_child(Art.mesh(Art.box(Vector3(2.64, 0.04, 1.44)), Props.GOLD, Vector3(0, 0.4, 0)))
+	_altar.add_child(Art.mesh(Art.box(Vector3(0.02, 0.3, 1.0)), Props.GOLD, Vector3(1.31, 0.2, 0)))
+	_altar.position = GOAL
+	add_child(_altar)
 	# 正面红地毯
 	add_child(Art.mesh(Art.box(Vector3(3.6, 0.012, 1.5)), Color(0.62, 0.08, 0.08), Vector3(-25.9, y + 0.006, zc)))
 	for s in [-1.0, 1.0]:
@@ -466,19 +714,19 @@ func _build_hall() -> void:
 	_put(Props.flower_wall(4.2), Vector3(-30.75, y, zc), PI / 2)
 	_put(Props.incense_burner(), Vector3(-30.5, y, zc))
 	for s in [-1.0, 1.0]:
-		var c := GOAL + Vector3(-0.9, 0.4, s * 0.9)
-		add_child(Art.mesh(Art.cylinder(0.05, 0.05, 0.4), Color(0.97, 0.95, 0.85), c + Vector3(0, 0.2, 0)))
+		var c := Vector3(-0.9, 0.4, s * 0.9)  # 灵台上的蜡烛跟着灵台走
+		_altar.add_child(Art.mesh(Art.cylinder(0.05, 0.05, 0.4), Color(0.97, 0.95, 0.85), c + Vector3(0, 0.2, 0)))
 		var flame := MeshInstance3D.new()
 		flame.mesh = Art.sphere(0.035)
 		flame.material_override = Art.glow(Color(1.0, 0.7, 0.3), 5.0)
 		flame.scale = Vector3(1, 1.6, 1)
 		flame.position = c + Vector3(0, 0.45, 0)
-		add_child(flame)
+		_altar.add_child(flame)
 		var light := OmniLight3D.new()
 		light.light_color = Color(1.0, 0.75, 0.4)
 		light.omni_range = 3.0
 		light.position = c + Vector3(0, 0.5, 0)
-		add_child(light)
+		_altar.add_child(light)
 		# 灵台两边的纸扎童子
 		_put(Props.paper_kid(), Vector3(-30.3, y, zc + s * 1.85), PI / 2 - s * 0.35)
 		_solid(Vector3(0.45, 1.0, 0.45), Vector3(-30.3, y + 0.5, zc + s * 1.85))
