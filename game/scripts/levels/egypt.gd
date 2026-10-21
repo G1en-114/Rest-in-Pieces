@@ -37,7 +37,6 @@ const DART_HEIGHT := 1.0
 const DART_SPREAD := 0.4  # 一排里三支飞镖的间距
 const DART_VOLLEY_GAP := 0.25
 const DART_HIT_RADIUS := 0.32
-const DART_PENALTY := 5.0
 const TRAP_DELAY := 0.6  # 机关砖被踩后多久放箭
 const TRAP_XS := [-4.0, -7.0, -10.0, -13.0]
 const RAMP_Z := [-84.0, -90.0]  # 甬道尽头往下的斜坡
@@ -460,8 +459,8 @@ func _update_darts(g: Node) -> void:
 						continue
 					_dart_hit_at[b] = _time
 					_dart_hits += 1
-					b.apply_central_impulse(l.dir * 110.0 + Vector3.UP * 25.0)
-					penalty.emit(DART_PENALTY, "嗖——中了一镖！体面 -%d" % DART_PENALTY)
+					b.knock(l.dir * 6.0 + Vector3.UP * 4.0, 1.0)
+					notice.emit("嗖——被飞镖撞飞了！")
 
 
 func _build_dart_corridor() -> void:

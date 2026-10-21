@@ -29,6 +29,7 @@ const WALL_T := 0.3
 const EYE_HEIGHT := 1.67  # 第一人称眼睛离脚下地面多高（抬棺人身体中心 0.87 + 镜头 0.8）
 const PHOTO_POS_TOL := 0.7  # 拍照时眼睛离拍照点多近才算
 const PHOTO_ANGLE_TOL := 7.0  # 镜头朝向和该看的方向差几度以内才算
+const GHOST_LEN := 1.6  # 俯视断桥接缝两边幽灵地面的长度
 
 ## 所有关卡，按选关界面的顺序
 const LEVELS := [
@@ -50,6 +51,7 @@ var _m := {}  # 各区域的材质
 var prefer_first_person := false  # 主打第一人称的关卡：一进来就是第一人称
 var _illusions: Array = []  # 拍照固定的视错觉：{eye, dir, fill_mesh, fill_cs, grey, fixed}
 var _photo_mat: Material
+var _view_bridges: Array = []  # 俯视视错觉断桥：{seam, axis, width, yaw, offset, ghosts, hints, aligned, bot}
 var _last_block: MeshInstance3D  # 刚搭的那块地面的外观（给视错觉拿去变灰）
 
 
@@ -122,13 +124,15 @@ func debug_text() -> String:
 
 # ---------- 拍照固定视错觉 ----------
 
-## 一处拍照固定的视错觉断口（路都沿 -Z 方向走）。
-## 站在 vantage（地面点）用第一人称往 a 看：a 是近处这段路的尽头。远处那段路的起点 b 就在同一条视线上、远 s 倍，
-## 宽和长也放大 s 倍，所以从这里看，两段路严丝合缝地接在一起；换个地方一看就露馅：中间是空的，远处那段更低（或更高）。
-## 在这个角度拍照，a 和 b 之间长出一段灰色的“照片”路面。它正好沿着视线，从拍照点看画面一点没变，但现在是实的了。
-## near_grey：近处那段路要一起变灰的外观。返回远处那段路（far_len 是放大前的长度）的终点
-func _photo_gap(vantage: Vector3, a: Vector3, s: float, width: float, far_len: float, far_mat: Material,
-		near_grey: Array = []) -> Vector3:
+## 一处拍照固定的视错觉断口（Viewfinder 式）。
+## 站在 vantage（地面点）用第一人称往 a 看：a 是近处这段路的尽头，从 a 往前本该有一段 length 长、width 宽的平路，
+## 可是那里是空的。真正摆着的是这段路以眼睛为中心放大 s 倍的样子：更远、更大、更低，悬在下面的山谷 / 水面上。
+## 放大是沿着视线做的，所以从这里看两段路严丝合缝；换个地方一看就露馅。
+## 在这个角度拍照，远处那块就沿着视线缩回来，正好落进断口，变成一段平的灰色“照片”路面（从拍照点看画面一点没变）。
+## 远处那块正前方要留空，不能被别的东西挡住或压住；路接下来要从断口末端往旁边拐。
+## near_grey：近处那段路要一起变灰的外观。返回断口末端（和 a 一样高）
+func _photo_gap(vantage: Vector3, a: Vector3, s: float, width: float, length: float, far_mat: Material,
+		near_grey: Array = [], thick := 0.4) -> Vector3:
 	if _photo_mat == null:
 		# 不受光照影响的平涂灰：在黄昏的暖光里也一眼看得出“这一块是照片”
 		var m := StandardMaterial3D.new()
@@ -136,21 +140,28 @@ func _photo_gap(vantage: Vector3, a: Vector3, s: float, width: float, far_len: f
 		m.albedo_color = Color(0.62, 0.62, 0.64)
 		_photo_mat = m
 	var eye := vantage + Vector3(0, EYE_HEIGHT, 0)
-	var b := eye + (a - eye) * s
-	var far_w := width * s
-	var end := b + Vector3(0, 0, -far_len * s)
-	_floor(Vector3(b.x - far_w / 2, b.y, b.z), Vector3(b.x + far_w / 2, b.y, end.z), far_mat, 2.0 * s)
-	var grey: Array = near_grey.duplicate()
-	grey.append(_last_block)
-	var fill: Array = _ramp(a, b, width, _photo_mat, 0.3)
-	fill[0].disabled = true
-	fill[1].visible = false
+	var end := a + Vector3(0, 0, -length)
+	var center := (a + end) / 2
+	var body := _collider(Vector3(width, 0.5, length), center + Vector3(0, -0.25, 0), false)
+	var cs: CollisionShape3D = body.get_child(0)
+	cs.disabled = true
+	var piece := Art.block(Vector3(width, thick, length), center + Vector3(0, -thick / 2, 0), far_mat)
+	var home := piece.transform
+	piece.transform = _homothety(eye, s) * home
+	add_child(piece)
 	var marker := _camera_marker()
 	marker.position = vantage
 	add_child(marker)
-	_illusions.append({eye = eye, dir = (a - eye).normalized(), fill_cs = fill[0], fill_mesh = fill[1], grey = grey,
-		fixed = false, marker = marker})
+	var grey: Array = near_grey.duplicate()
+	grey.append(piece)
+	_illusions.append({eye = eye, dir = (a - eye).normalized(), cs = cs, piece = piece, home = home, s = s, grey = grey,
+		fixed = false, solid = false, marker = marker})
 	return end
+
+
+## 以 center 为中心放大 k 倍
+static func _homothety(center: Vector3, k: float) -> Transform3D:
+	return Transform3D(Basis.from_scale(Vector3.ONE * k), center * (1.0 - k))
 
 
 ## 拍照点的标记：一台架在三脚架上的老式相机，地上画个圈
@@ -209,11 +220,17 @@ func fix_illusion(i: int) -> void:
 	if il.fixed:
 		return
 	il.fixed = true
-	il.fill_cs.disabled = false
-	il.fill_mesh.visible = true
 	for m in il.grey:
 		m.material_override = _photo_mat
 	il.marker.visible = false
+	# 远处那块沿着视线缩回断口里，落定了才踩得上去
+	var piece: MeshInstance3D = il.piece
+	var tw := piece.create_tween()
+	tw.tween_method(func(k: float) -> void: piece.transform = _homothety(il.eye, k) * il.home, il.s, 1.0, 1.2) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	tw.tween_callback(func() -> void:
+		il.cs.disabled = false
+		il.solid = true)
 
 
 func illusion_mask() -> int:
@@ -228,6 +245,161 @@ func apply_illusion_mask(m: int) -> void:
 	for i in _illusions.size():
 		if m & (1 << i):
 			fix_illusion(i)
+
+
+# ---------- 俯视视错觉断桥 ----------
+
+## 纪念碑谷式断桥（原理见 china.gd）：上层桥头在 seam 断开，下层那段从 seam + 偏移 开始，
+## 偏移正好沿着固定视角转到 yaw 时的视线、往下 drop 米，所以只有有人俯视、视角转到 yaw 时两段才在画面上连成一条。
+## 对齐时接缝两边各开一段幽灵地面，走过接缝的人（连同抓着的东西）就沿视线平移到另一段上。
+## axis 是过桥方向（±X 或 ±Z）。下层那段由调用方自己搭，返回偏移
+func _view_bridge(seam: Vector3, axis: Vector3, width: float, yaw: float, drop: float) -> Vector3:
+	var a := deg_to_rad(yaw)
+	var cam := Vector3(sin(a) * Main.CAM_DIST, Main.CAM_HEIGHT, cos(a) * Main.CAM_DIST).normalized()
+	var offset := -cam * (drop / cam.y)
+	var side := Vector3(-axis.z, 0, axis.x) * (width / 2)
+	var lower := seam + offset
+	var ghosts: Array = []
+	var hints: Array = []
+	for g in [[seam - side, seam + axis * GHOST_LEN + side, "相信队友，往前走"], [lower - axis * GHOST_LEN - side, lower + side, ""]]:
+		var r := _ghost_floor(g[0], g[1], g[2])
+		ghosts.append(r[0])
+		hints.append(r[1])
+	_view_bridges.append({seam = seam, axis = axis, width = width, yaw = yaw, offset = offset, ghosts = ghosts,
+		hints = hints, aligned = false, bot = false})
+	_set_view_bridge(_view_bridges.size() - 1, false)
+	return offset
+
+
+## 一段只在断桥对齐时才有的地面，外加只有第一人称看得见的提示（半透明金色地面、两侧虚线、飘着的纸钱）。
+## a、b 是对角。返回 [碰撞形状, 提示]
+func _ghost_floor(a: Vector3, b: Vector3, label := "") -> Array:
+	var body := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(absf(b.x - a.x), 0.5, absf(b.z - a.z))
+	cs.shape = shape
+	body.position = Vector3((a.x + b.x) / 2, a.y - 0.25, (a.z + b.z) / 2)
+	body.add_child(cs)
+	add_child(body)
+	var root := Node3D.new()
+	root.position = Vector3((a.x + b.x) / 2, a.y, (a.z + b.z) / 2)
+	add_child(root)
+	var along_x := absf(b.x - a.x) > absf(b.z - a.z)
+	if not along_x:
+		root.rotation.y = PI / 2
+	var length := maxf(absf(b.x - a.x), absf(b.z - a.z))
+	var wid := minf(absf(b.x - a.x), absf(b.z - a.z))
+	var glow := StandardMaterial3D.new()
+	glow.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	glow.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	glow.albedo_color = Color(1.0, 0.78, 0.25, 0.5)
+	var dash := StandardMaterial3D.new()
+	dash.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	dash.albedo_color = Color(1.0, 0.9, 0.55)
+	var parts: Array[MeshInstance3D] = []
+	var plane := MeshInstance3D.new()
+	plane.mesh = Art.box(Vector3(length, 0.02, wid))
+	plane.material_override = glow
+	plane.position.y = 0.01
+	parts.append(plane)
+	for s in [-1.0, 1.0]:
+		for i in int(length / 0.4):
+			var d := MeshInstance3D.new()
+			d.mesh = Art.box(Vector3(0.24, 0.05, 0.1))
+			d.material_override = dash
+			d.position = Vector3(-length / 2 + 0.2 + i * 0.4, 0.02, s * (wid / 2 - 0.1))
+			parts.append(d)
+	for i in 8:
+		var paper := MeshInstance3D.new()
+		paper.mesh = Art.box(Vector3(0.24, 0.005, 0.13))
+		paper.material_override = dash
+		paper.position = Vector3(randf_range(-length / 2, length / 2), randf_range(0.6, 1.6), randf_range(-wid / 2, wid / 2))
+		parts.append(paper)
+		var tw := paper.create_tween().set_loops()
+		tw.tween_property(paper, "position:y", paper.position.y + 0.25, 1.3 + i * 0.2).set_trans(Tween.TRANS_SINE)
+		tw.tween_property(paper, "position:y", paper.position.y, 1.3 + i * 0.2).set_trans(Tween.TRANS_SINE)
+		var spin := paper.create_tween().set_loops()
+		spin.tween_property(paper, "rotation:y", TAU, 3.0 + i).from(0.0)
+	if label != "":  # 上层接缝上方飘一行字
+		var tip := _label3d(label, Vector3(0, 1.9, 0), 48)
+		tip.modulate = Color(1.0, 0.9, 0.55)
+		tip.layers = 1 << (HINT_LAYER - 1)
+		root.add_child(tip)
+	for m in parts:
+		m.layers = 1 << (HINT_LAYER - 1)
+		m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		root.add_child(m)
+	return [cs, root]
+
+
+func _set_view_bridge(i: int, aligned: bool) -> void:
+	var vb: Dictionary = _view_bridges[i]
+	vb.aligned = aligned
+	for g in vb.ghosts:
+		g.disabled = not aligned
+	for h in vb.hints:
+		h.visible = aligned
+
+
+## 这个点在第 i 座断桥的哪一边：1 = 上层桥头那段（或刚越过接缝），-1 = 下层那段的开头，0 = 都不是。
+## along 是沿过桥方向离接缝（下层是离下层起点）多远
+func _view_bridge_side(i: int, p: Vector3) -> Array:
+	var vb: Dictionary = _view_bridges[i]
+	var axis: Vector3 = vb.axis
+	var side := Vector3(-axis.z, 0, axis.x)
+	var mid_y: float = vb.seam.y + vb.offset.y / 2
+	var ref: Vector3 = vb.seam if p.y > mid_y else vb.seam + vb.offset
+	var d := p - ref
+	if absf(d.dot(side)) > vb.width / 2 + 0.5:
+		return [0, 0.0]
+	return [1 if p.y > mid_y else -1, d.dot(axis)]
+
+
+## 房主每帧调：有人俯视、视角转对了，断桥就接上；有人站在幽灵地面上时锁住不断；走过接缝的整组平移过去
+func _update_view_bridges(g: Node) -> void:
+	for i in _view_bridges.size():
+		var vb: Dictionary = _view_bridges[i]
+		var view_ok: bool = vb.bot or (g.someone_topdown() and absf(wrapf(g.cam_yaw - vb.yaw, -180.0, 180.0)) < 6.0)
+		var locked: bool = vb.aligned and g.team_bodies().any(func(b: RigidBody3D) -> bool:
+			var r := _view_bridge_side(i, b.global_position)
+			return r[0] == 1 and r[1] > -0.5 and r[1] < GHOST_LEN + 0.5 or r[0] == -1 and r[1] > -GHOST_LEN - 0.5 and r[1] < 0.5)
+		var aligned: bool = view_ok or locked
+		if aligned != vb.aligned:
+			_set_view_bridge(i, aligned)
+			if aligned:
+				notice.emit("咔哒——桥接上了！" + ("" if Main.mode == "solo" else "\n第一人称的人：踩着金色虚线往虚空里走"))
+		if not aligned:
+			continue
+		for group in g.move_groups():
+			var r := _view_bridge_side(i, group[0].global_position)
+			var d := Vector3.ZERO
+			if r[0] == 1 and r[1] > 0.0 and r[1] < 3.0:
+				d = vb.offset
+			elif r[0] == -1 and r[1] < 0.0 and r[1] > -3.0:
+				d = -vb.offset
+			if d == Vector3.ZERO:
+				continue
+			for body in group:
+				body.global_position += d
+			for k in g.bearers.size():
+				if g.bearers[k] in group:
+					g.flash(k)
+
+
+func view_bridge_mask() -> int:
+	var m := 0
+	for i in _view_bridges.size():
+		if _view_bridges[i].aligned:
+			m |= 1 << i
+	return m
+
+
+## 加入方要看得见第一人称的虚线提示
+func apply_view_bridge_mask(m: int) -> void:
+	for i in _view_bridges.size():
+		if bool(m & (1 << i)) != _view_bridges[i].aligned:
+			_set_view_bridge(i, bool(m & (1 << i)))
 
 
 ## 电脑队伍在 "wait:<标签>" 处能不能出发

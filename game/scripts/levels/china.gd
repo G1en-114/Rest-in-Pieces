@@ -15,7 +15,6 @@ const ALIGN_YAW := 135.0  # 固定视角转到这个角度，断桥才接得上
 const SEAM_X := -16.0  # 上层桥头的接缝
 const BRIDGE_Z := -12.4
 const BRIDGE_WIDTH := 3.2
-const GHOST_LEN := 1.6
 ## 下层 = 上层 + 偏移；偏移方向就是 ALIGN_YAW 视角的视线方向（远离镜头）
 const BRIDGE_OFFSET := Vector3(-3.71, -4.63, 3.71)
 const CHECKPOINT_UPPER := Vector3(-10.5, 0, BRIDGE_Z)
@@ -433,66 +432,9 @@ func _railing(start: Vector3, length: float) -> void:
 
 
 func _ghost(a: Vector3, b: Vector3) -> void:
-	var body := StaticBody3D.new()
-	var cs := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = Vector3(absf(b.x - a.x), 0.5, absf(b.z - a.z))
-	cs.shape = shape
-	body.position = Vector3((a.x + b.x) / 2, a.y - 0.25, (a.z + b.z) / 2)
-	body.add_child(cs)
-	add_child(body)
-	_ghosts.append(cs)
-	_ghost_hint(a, b)
-
-
-## 第一人称专用的提示：半透明的金色地面、两侧虚线，上面飘着几张纸钱
-func _ghost_hint(a: Vector3, b: Vector3) -> void:
-	var root := Node3D.new()
-	root.position = Vector3((a.x + b.x) / 2, a.y, (a.z + b.z) / 2)
-	add_child(root)
-	_hints.append(root)
-	var length := absf(b.x - a.x)
-	var wid := absf(b.z - a.z)
-	var glow := StandardMaterial3D.new()
-	glow.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	glow.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	glow.albedo_color = Color(1.0, 0.78, 0.25, 0.5)
-	var dash := StandardMaterial3D.new()
-	dash.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	dash.albedo_color = Color(1.0, 0.9, 0.55)
-	var parts: Array[MeshInstance3D] = []
-	var plane := MeshInstance3D.new()
-	plane.mesh = Art.box(Vector3(length, 0.02, wid))
-	plane.material_override = glow
-	plane.position.y = 0.01
-	parts.append(plane)
-	for s in [-1.0, 1.0]:
-		for i in int(length / 0.4):
-			var d := MeshInstance3D.new()
-			d.mesh = Art.box(Vector3(0.24, 0.05, 0.1))
-			d.material_override = dash
-			d.position = Vector3(-length / 2 + 0.2 + i * 0.4, 0.02, s * (wid / 2 - 0.1))
-			parts.append(d)
-	for i in 8:
-		var paper := MeshInstance3D.new()
-		paper.mesh = Art.box(Vector3(0.24, 0.005, 0.13))
-		paper.material_override = dash
-		paper.position = Vector3(randf_range(-length / 2, length / 2), randf_range(0.6, 1.6), randf_range(-wid / 2, wid / 2))
-		parts.append(paper)
-		var tw := create_tween().set_loops()
-		tw.tween_property(paper, "position:y", paper.position.y + 0.25, 1.3 + i * 0.2).set_trans(Tween.TRANS_SINE)
-		tw.tween_property(paper, "position:y", paper.position.y, 1.3 + i * 0.2).set_trans(Tween.TRANS_SINE)
-		var spin := create_tween().set_loops()
-		spin.tween_property(paper, "rotation:y", TAU, 3.0 + i).from(0.0)
-	if a.y > -2.0:  # 上层接缝上方飘一行字
-		var tip := _label3d("相信队友，往前走", Vector3(0, 1.9, 0), 48)
-		tip.modulate = Color(1.0, 0.9, 0.55)
-		root.add_child(tip)
-		tip.layers = 1 << (HINT_LAYER - 1)
-	for m in parts:
-		m.layers = 1 << (HINT_LAYER - 1)
-		m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		root.add_child(m)
+	var r := _ghost_floor(a, b, "相信队友，往前走" if a.y > -2.0 else "")
+	_ghosts.append(r[0])
+	_hints.append(r[1])
 
 
 # ---------- 4 灵堂 ----------

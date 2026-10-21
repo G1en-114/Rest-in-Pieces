@@ -43,6 +43,7 @@ var bend := 0.0  # 当前前倾程度 0~1（往下够的时候）
 var traction := 1.0  # 抓地力：踩在湿地板上会变小，起步刹车都打滑
 var speed_scale := 1.0  # 走路速度倍数：沙地、流沙里会变小
 var ground_velocity := Vector3.ZERO  # 脚下踩着的东西（船）的速度：走路速度是相对它算的
+var stun := 0.0  # 被机关撞飞后还要晕多久：这段时间不走路、不站直、抓不住东西，任由身体乱滚
 var puppet := false  # 联机客户端：不算物理，位置和 bend 都由房主的快照填写
 var _jump_was_down := false
 var _model: Node3D
@@ -129,8 +130,14 @@ func _build_model() -> void:
 		_arm_bones.append(idx)
 
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
 	if puppet:
+		return
+	if stun > 0.0:
+		stun -= delta
+		bend = 0.0
+		for i in 2:
+			_drive_hand(i)
 		return
 	var dir := move_dir.limit_length(1.0)
 	var grounded := _is_grounded()
@@ -144,6 +151,8 @@ func _physics_process(_delta: float) -> void:
 	# 保持站立：力度有限，负重太大就会被压歪
 	var av := angular_velocity
 	apply_torque(global_basis.y.cross(Vector3.UP) * UPRIGHT_K - Vector3(av.x, 0, av.z) * UPRIGHT_D)
+	if global_basis.y.y < -0.9:  # 摔得头朝下：上面那个力矩是零，额外踢一脚让他翻回来
+		apply_torque(global_basis.x * UPRIGHT_K)
 
 	var yaw_torque := -av.y * YAW_D
 	var fwd := -global_basis.z
@@ -225,7 +234,7 @@ func _drive_hand(i: int) -> void:
 	hand.apply_central_force(f)
 	apply_force(-f, shoulder - global_position)
 
-	if want_grab[i]:
+	if want_grab[i] and stun <= 0.0:
 		if grabs[i] == null:
 			_try_grab(i)
 	else:
@@ -251,6 +260,14 @@ func _try_grab(i: int) -> void:
 			grabs[i] = j
 			held[i] = body
 			return
+
+
+## 被机关撞飞：松开手里的东西，朝 velocity 飞出去，翻着跟头晕 seconds 秒
+func knock(velocity: Vector3, seconds := 1.3) -> void:
+	release_all()
+	stun = seconds
+	linear_velocity = velocity
+	angular_velocity = Vector3(randf_range(-1.0, 1.0), randf_range(-0.5, 0.5), randf_range(-1.0, 1.0)).normalized() * 7.0
 
 
 func release_all() -> void:

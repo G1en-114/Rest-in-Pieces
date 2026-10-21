@@ -47,7 +47,7 @@ const FP_EYE_HEIGHT := 0.8
 const ORTHO_SIZE := 15.0
 const DELIVER_TILT := 25.0  # 送达时棺材倾角要小于这个
 const DELIVER_HOLD := 1.5  # 稳稳停在灵台上这么久算送达
-static var NET_VERSION := "2026-10-21"  # 联机两边版本不一样就拒绝连接（改了联机协议或关卡就改这个；--netversion= 可以假装别的版本来测）
+static var NET_VERSION := "2026-10-21b"  # 联机两边版本不一样就拒绝连接（改了联机协议或关卡就改这个；--netversion= 可以假装别的版本来测）
 const VIEWFINDER_FOV := 50.0  # 举起相机时镜头拉近一点
 ## 天空、雾、太阳的默认值（中式关的黄昏），关卡的 env() 可以覆盖其中任意几项
 const ENV_DEFAULT := {
