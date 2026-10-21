@@ -17,6 +17,8 @@ extends Node3D
 ##   --bot          两个抬棺人自动抓住棺材沿关卡路线走（测试物理用）
 ##   --levelbot     同 --bot，从第 1 间走完整关，送达后打印结算并退出
 ##   --noalign      配 --bot：不转视角直接走上断桥（应该掉下去）
+##   --nowait       配 --bot：路线里的 "wait:" 都不等（测机关会不会伤人）
+##   --stopat=N     配 --bot：走到第 N 个路线点就站着不动（测塌陷地板之类）
 ##   --lonetest     同 --bot，但 2 号空着手自己过断桥（测试单人过桥不掉下去）
 ##   --solotest     单人模式自动测试：抓起 → 走 → 扔到地上 → 弯腰捡起 → 再抬起来
 ##   --solo / --fp  直接进入单人模式 / 并切到第一人称（放在 --join 后面则是联机加入方用第一人称）
@@ -112,6 +114,9 @@ var duotest := false
 var atbridge := false  # 测试用：中式关整队直接出生在断桥前，面朝桥
 var lonetest := false  # 测试用：2 号抬棺人不抓棺材，空着手自己走过断桥（不该掉下去）
 var bot_noalign := false  # 测试用：不转视角直接走上断桥（应该掉下去）
+var bot_nowait := false
+var bot_stopat := -1
+var bot_delay := 0.0  # --botdelay=秒：电脑队伍晚这么久才出发（换个时机撞机关）
 var _room_test := -1  # --bot --room=N：只测第 N 间
 var quit_at := -1.0  # 按模拟时间算，开头卡顿不影响测试
 var sim_time := 0.0  # 物理模拟走过的时间，测试脚本都用它计时
@@ -143,6 +148,12 @@ func _ready() -> void:
 			levelbot = true
 		elif arg == "--noalign":
 			bot_noalign = true
+		elif arg == "--nowait":
+			bot_nowait = true
+		elif arg.begins_with("--botdelay="):
+			bot_delay = float(arg.get_slice("=", 1))
+		elif arg.begins_with("--stopat="):
+			bot_stopat = int(arg.get_slice("=", 1))
 		elif arg == "--lonetest":
 			bot = true
 			lonetest = true
@@ -1129,7 +1140,7 @@ func _drive_bot() -> void:
 			b.reach_pitch = -1.1
 	if lonetest:
 		bearers[1].want_grab = [false, false]
-	if t < 2.0:
+	if t < 2.0 + bot_delay:
 		return
 	_log_timer -= get_physics_process_delta_time()
 	if _log_timer <= 0.0:
@@ -1145,10 +1156,12 @@ func _drive_bot() -> void:
 		return
 	if not bearers.all(func(b): return b.holds(coffin) or (lonetest and b == bearers[1])):
 		return  # 等两个人都抓稳了再走
+	if _bot_wp == bot_stopat:
+		return
 	var wp: Variant = _bot_path[_bot_wp]
 	var dir := Vector3.ZERO
 	if wp is String:
-		if level.bot_can_go(wp.trim_prefix("wait:")):
+		if bot_nowait or level.bot_can_go(wp.trim_prefix("wait:")):
 			_bot_wp += 1
 	elif wp is Dictionary:
 		if level.bot_can_go(wp.until):
@@ -1221,6 +1234,9 @@ func _bot_log(t: float) -> void:
 		_bot_wp, _bot_path.size(), room, t, coffin.global_position.snapped(Vector3.ONE * 0.01),
 		rad_to_deg(coffin.global_basis.y.angle_to(Vector3.UP)), int(score.dignity), score.corpse_out,
 		bearers.map(func(b): return b.grabs.map(func(g): return g != null)), bearers[1].global_position.snapped(Vector3.ONE * 0.01)])
+	var extra := level.debug_text()
+	if extra:
+		print("    ", extra)
 
 
 func _finish_run() -> void:

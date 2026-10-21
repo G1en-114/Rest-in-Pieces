@@ -6,6 +6,7 @@ const SUIT := Color(0.07, 0.07, 0.08)
 const SHIRT := Color(0.95, 0.95, 0.93)
 const FLOOR_SHADER := preload("res://shaders/floor.gdshader")
 const WALL_SHADER := preload("res://shaders/wall.gdshader")
+const SANDSTONE_SHADER := preload("res://shaders/sandstone.gdshader")
 
 static var _mats := {}
 static var _unit_box: BoxMesh
@@ -138,3 +139,12 @@ static func googly_eyes(parent: Node3D, center: Vector3, forward: Vector3, up: V
 		var base: Vector3 = center + side * s * 0.11 * size + up * 0.06 * size
 		parent.add_child(mesh(sphere(0.075 * size), Color.WHITE, base))
 		parent.add_child(mesh(sphere(0.034 * size), Color.BLACK, base + forward * 0.062 * size + up * 0.01 * size))
+
+
+## 埃及砂岩墙材质（带象形文字饰带），params 里写要改的 uniform
+static func sandstone_mat(params := {}) -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = SANDSTONE_SHADER
+	for k in params:
+		m.set_shader_parameter(k, params[k])
+	return m

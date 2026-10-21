@@ -107,6 +107,11 @@ func apply_net_state(_a: PackedFloat32Array) -> void:
 	pass
 
 
+## 自动测试日志里附带的关卡状态（机关位置之类）
+func debug_text() -> String:
+	return ""
+
+
 ## 电脑队伍在 "wait:<标签>" 处能不能出发
 func bot_can_go(_tag: String) -> bool:
 	return true
@@ -133,12 +138,12 @@ func _floor(a: Vector3, b: Vector3, material: Material, thick := 0.5, hard := tr
 
 ## 沿 X 方向的墙（固定 z）
 func _wall_x(z: float, x0: float, x1: float, y := 0.0, material: Material = null, h := WALL_H) -> void:
-	_wall(Vector3(x1 - x0, h, WALL_T), Vector3((x0 + x1) / 2, y + h / 2, z), material)
+	_wall(Vector3(absf(x1 - x0), h, WALL_T), Vector3((x0 + x1) / 2, y + h / 2, z), material)
 
 
 ## 沿 Z 方向的墙（固定 x）
 func _wall_z(x: float, z0: float, z1: float, y := 0.0, material: Material = null, h := WALL_H) -> void:
-	_wall(Vector3(WALL_T, h, z1 - z0), Vector3(x, y + h / 2, (z0 + z1) / 2), material)
+	_wall(Vector3(WALL_T, h, absf(z1 - z0)), Vector3(x, y + h / 2, (z0 + z1) / 2), material)
 
 
 func _wall(size: Vector3, pos: Vector3, material: Material) -> void:
@@ -206,8 +211,28 @@ func _label3d(text: String, pos: Vector3, size: int) -> Label3D:
 	return l
 
 
+## 一段斜坡：a、b 是坡面中线低端和高端的点（也可以反过来），width 是坡宽。碰撞 0.5 米厚，外观 thick 厚
+func _ramp(a: Vector3, b: Vector3, width: float, material: Material, thick := 0.5, hard := false) -> void:
+	var d := b - a
+	var basis := Basis.looking_at(d.normalized(), Vector3.UP)  # 局部 -Z 沿坡面，局部 Y 是坡面法线
+	var center := (a + b) / 2
+	var body := StaticBody3D.new()
+	if hard:
+		body.add_to_group("hard")
+	var cs := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(width, 0.5, d.length())
+	cs.shape = shape
+	body.add_child(cs)
+	body.transform = Transform3D(basis, center - basis.y * 0.25)
+	add_child(body)
+	var mi := Art.block(Vector3.ONE, Vector3.ZERO, material)
+	mi.transform = Transform3D(basis * Basis.from_scale(Vector3(width, thick, d.length())), center - basis.y * thick / 2)
+	add_child(mi)
+
+
 ## 一个会转的花圈：抬棺人碰到就加分
-func _wreath(pos: Vector3, amount := 15.0, radius := 0.9, color := Color(0.16, 0.45, 0.22)) -> void:
+func _wreath(pos: Vector3, amount := 15.0, radius := 0.9, color := Color(0.16, 0.45, 0.22), label := "花圈") -> void:
 	var area := Area3D.new()
 	area.position = pos + Vector3.UP * 0.9
 	var cs := CollisionShape3D.new()
@@ -227,11 +252,11 @@ func _wreath(pos: Vector3, amount := 15.0, radius := 0.9, color := Color(0.16, 0
 		var a := TAU * i / 8.0
 		var c := Color(0.97, 0.97, 0.95) if i % 2 == 0 else Color(0.98, 0.82, 0.3)
 		ring.add_child(Art.mesh(Art.sphere(0.09), c, Vector3(cos(a) * 0.37, 0.05, sin(a) * 0.37)))
-	area.add_child(_label3d("花圈 +%d" % amount, Vector3(0, 0.75, 0), 48))
+	area.add_child(_label3d("%s +%d" % [label, amount], Vector3(0, 0.75, 0), 48))
 	add_child(area)
 	var tween := ring.create_tween().set_loops()  # 绑在花圈上：花圈被捡走后补间跟着停
 	tween.tween_property(ring, "rotation:y", TAU, 4.0).from(0.0)
 	area.body_entered.connect(func(body: Node) -> void:
 		if body is Bearer:
-			bonus.emit(amount, "捡到花圈！体面 +%d" % amount)
+			bonus.emit(amount, "捡到%s！体面 +%d" % [label, amount])
 			area.queue_free())
