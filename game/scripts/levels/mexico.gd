@@ -11,8 +11,11 @@ extends Level
 ##   2 彩色小镇：两条横街上有来回开的游行花车；爬上广场音乐亭往北拍 → 第二处拍照（运河上的断桥）
 ##   3 河边集市：三条摊位巷子，头顶的彩罐来回荡，被砸到的人直接飞出去
 ##   4 花船运河：花船载着去河中间的小岛；小岛北边的桥断了，下面是山谷 → 俯视转视角过桥
-##   5 大祭坛（山谷里）：一根转着的骷髅长臂扫过整个广场，跳过去或者跟在它后面走
-##     → 爬上小金字塔往北拍，第三处拍照接上天坑上的断桥 → 把逝者放上祭坛
+##   5 大祭坛山谷：一根转着的骷髅长臂扫过整个广场，跳过去或者跟在它后面走
+##     → 爬上小金字塔往北拍，第三处拍照接上天坑上的断桥
+##   6 烟花城堡：烟花塔上两根反着转的转臂、东墙一排排打过来的火箭 → 把逝者放上祭坛
+## 另外到处有坑：陵墓东边的坟里会伸出骷髅手，墓园东头的花环底下是空的；集市西墙有一条二楼回廊（弹簧板上去，
+## 绕过彩罐，近路）；运河除了花船还有一只万寿菊木筏；山谷西墙有一段是假的
 ##
 ## 联机：花车、彩罐、花船、长臂、倒下的墓碑都按 tick(t) 的时间算，两边各算各的；
 ## 拍没拍成由 main.gd 放在快照头里同步；断桥接没接上、墓碑什么时候开始倒放在 net_state 里。
@@ -29,6 +32,7 @@ const YARD := [16.0, 8.0, -32.0]  # 半宽、南边、北边
 const GRAVE_ROWS := [-3.0, -8.0, -16.0, -21.0, -27.0]
 const GRAVE_XS := [5.5, 8.0, 10.5, 13.0]
 const TRENCH := [-22.4, -25.0]  # 墓地中间那道沟的南北两边
+const FAKE_GRAVE := [14.0, -4.5, -6.5]  # 墓园东头那块假地：x0（到东墙）、z0、z1
 const PLATE := Vector3(14.0, 0, -18.5)  # 铃铛石板：踩上去墓碑就开始倒
 const PLATE_R := 0.9
 const DOMINO_SIZE := Vector3(0.55, 1.3, 0.16)  # 宽、高、厚
@@ -69,7 +73,7 @@ const SEAM := Vector3(0, MY, -159.0)  # 小岛北边断桥的接缝
 const ALIGN_YAW := 315.0
 const BRIDGE_THICK := 0.8
 # 5 山谷
-const VALLEY := [9.5, -168.0, -222.0]  # 半宽、南、北
+const VALLEY := [9.5, -168.0, -246.0]  # 半宽、南、北
 const HUB := Vector3(0, AY, -177.0)  # 转臂的轴
 const SWEEP_LEN := 9.2
 const SWEEP_PERIOD := 16.0
@@ -79,6 +83,14 @@ const PYRAMID_Z := [-190.4, -193.8]  # 金字塔顶的南北边
 const CENOTE := [-197.0, -209.5]  # 天坑的南北边
 const ARM2_Z := [-200.6, -203.0]
 const WALK2 := [-8.8, -5.6]
+const SECRET3_Z := [-183.0, -185.0]  # 山谷西墙那段假墙
+# 6 烟花城堡
+const CASTILLO_Z := -220.5
+const FW_ARM := 6.5
+const ROCKETS := [-213.5, -218.0, -222.5, -227.0]  # 火箭道
+# 集市二楼回廊
+const BALCONY := [-17.85, -14.6, -100.5, -127.5]  # x0, x1, z0, z1
+const BALCONY_H := 2.8
 
 var _time := 0.0
 var _floats: Array[AnimatableBody3D] = []
@@ -101,7 +113,7 @@ func _init() -> void:
 	par_time = 25.0 * 60.0
 	kill_y = -12.0
 	prefer_first_person = true
-	goal_pos = Vector3(2.5, AY, -215.0)
+	goal_pos = Vector3(2.5, AY, -239.0)
 	goal_size = Vector3(2.2, 0.8, 1.1)
 	var lo := SEAM + _bridge_offset()
 	rooms = [
@@ -121,7 +133,12 @@ func _init() -> void:
 		{name = "大祭坛", spawn = Vector3(lo.x, AY, -165.5), yaw = 0.0, kill_y = DEEP,
 			path = [Vector3(lo.x, 0, -166.4), "wait:sweep", Vector3(lo.x, 0, -186.9), Vector3(6.2, 0, -188.5),
 				Vector3(6.2, 0, -195.6), Vector3(0, 0, -195.6), Vector3(0, 0, -197.1), "wait:photo2", Vector3(0, 0, -201.8),
-				Vector3(-7.2, 0, -201.8), Vector3(-7.2, 0, -211.0), Vector3(-7.2, 0, goal_pos.z), goal_pos]},
+				Vector3(-7.2, 0, -201.8), Vector3(-7.2, 0, -210.6)]},
+		{name = "烟花城堡", spawn = Vector3(-7.2, AY, -211.2), yaw = 0.0, kill_y = DEEP,
+			path = [Vector3(-7.2, 0, -211.7), "wait:trap:rocket0:1.5:15.5_17.5", Vector3(-7.2, 0, -216.2),
+				"wait:trap:rocket1:1.5:15.5_17.5", Vector3(-7.2, 0, -220.7), "wait:trap:rocket2:1.5:15.5_17.5",
+				Vector3(-7.2, 0, -225.2), "wait:trap:rocket3:1.5:15.5_17.5", Vector3(-7.2, 0, -230.5),
+				Vector3(-7.2, 0, goal_pos.z), goal_pos]},
 	]
 
 
@@ -162,6 +179,7 @@ func _ready() -> void:
 	_build_market()
 	_build_canal()
 	_build_valley()
+	_build_fireworks()
 	_build_backdrop()
 	tick(0.0)
 
@@ -175,7 +193,9 @@ func room_at(p: Vector3) -> int:
 		return 2
 	if p.z > -160.0:
 		return 3
-	return 4
+	if p.z > CENOTE[1] - 0.3:
+		return 4
+	return 5
 
 
 func _say_once(key: String, text: String) -> void:
@@ -392,7 +412,15 @@ func _build_cemetery() -> void:
 	var z0: float = YARD[1]
 	var z1: float = YARD[2]
 	# 地面被中间那道沟分成南北两块
-	_floor(Vector3(-hw, 0, z0), Vector3(hw, 0, TRENCH[0]), _m.grass, 5.0)
+	var fx: float = FAKE_GRAVE[0]
+	_floor(Vector3(-hw, 0, z0), Vector3(fx, 0, TRENCH[0]), _m.grass, 5.0)
+	_floor(Vector3(fx, 0, z0), Vector3(hw, 0, FAKE_GRAVE[1]), _m.grass, 5.0)
+	_floor(Vector3(fx, 0, FAKE_GRAVE[2]), Vector3(hw, 0, TRENCH[0]), _m.grass, 5.0)
+	_trap(Traps.FakeFloor.new(Vector3(fx, 0, FAKE_GRAVE[1]), Vector3(hw, 0, FAKE_GRAVE[2]), _m.grass, 5.0))
+	var hand := Traps.Spikes.new(Vector3(3.7, 0, -12.0), Vector2(2.2, 3.2), PropsMexico.CREAM)
+	hand.triggered_by(Vector3(3.7, 1.0, -10.2), Vector3(1.2, 1.0, 0.5), 0.2)
+	hand.text = "坟里伸出一只骷髅手！"
+	_trap(hand)
 	_floor(Vector3(-hw, 0, TRENCH[1]), Vector3(hw, 0, z1), _m.grass, 5.0)
 	for zz in [[z0, TRENCH[0]], [TRENCH[1], z1]]:  # 中间的石板路
 		add_child(Art.block(Vector3(3.6, 0.03, zz[0] - zz[1]), Vector3(0, 0.015, (zz[0] + zz[1]) / 2), _m.path))
@@ -450,7 +478,7 @@ func _build_cemetery() -> void:
 	_lamp(Vector3(0, 3.5, -4.0), 0.9, 12.0, Color(1.0, 0.7, 0.4))
 	_lamp(Vector3(0, 3.5, -22.0), 0.9, 12.0, Color(1.0, 0.7, 0.4))
 	_wreath(Vector3(-14.0, 0, -19.0), 10.0, 0.5, PropsMexico.MARIGOLD.darkened(0.2), "万寿菊花环")
-	_wreath(Vector3(14.0, 0, -2.5), 10.0, 0.5, PropsMexico.MARIGOLD.darkened(0.2), "万寿菊花环")
+	_wreath(Vector3(15.0, 0, (FAKE_GRAVE[1] + FAKE_GRAVE[2]) / 2), 10.0, 0.5, PropsMexico.MARIGOLD.darkened(0.2), "万寿菊花环")  # 底下是空的
 	_sign("抓住把手，把棺材抬到山谷里的大祭坛", Vector3(0, 3.0, 0.5))
 	_build_dominoes()
 
@@ -664,6 +692,36 @@ func _build_market() -> void:
 	_wreath(Vector3(16.0, MY, -105.0), 10.0, 0.45, PropsMexico.MARIGOLD.darkened(0.2), "万寿菊花环")
 	_wreath(Vector3(-16.0, MY, -120.0), 10.0, 0.45, PropsMexico.MARIGOLD.darkened(0.2), "万寿菊花环")
 	_sign("小心头顶的彩罐", Vector3(WALK1[0] + 1.6, MY + 3.0, -101.5))
+	_build_balcony()
+
+
+## 集市西墙边的二楼回廊：弹簧板弹上去，沿着走能拿三个花环、绕过所有彩罐，尽头一条滑道下到运河边
+func _build_balcony() -> void:
+	var b: Array = BALCONY
+	var cx: float = (b[0] + b[1]) / 2
+	_floor(Vector3(b[0], BALCONY_H, b[2]), Vector3(b[1], BALCONY_H, b[3]), _m.wood, 0.4)
+	_rail(Vector3(b[1] - 0.08, BALCONY_H, b[2] - 3.6), Vector3(b[1] - 0.08, BALCONY_H, b[3]))
+	for z in [b[2] - 1.0, -114.0, b[3] + 1.0]:
+		add_child(Art.block(Vector3(0.25, BALCONY_H, 0.25), Vector3(b[1] - 0.2, MY + BALCONY_H / 2, z), _m.wood))
+	_ramp(Vector3(cx, BALCONY_H, b[3]), Vector3(cx, MY, b[3] - 5.5), b[1] - b[0], _m.wood, 0.4)
+	var spring := Traps.Spring.new(Vector3(-15.5, MY, -99.3), Vector2(1.2, 1.2), Vector3(-0.8, 8.0, -1.8), PropsMexico.MAGENTA)
+	spring.text = "嘣——弹上了二楼回廊！"
+	_trap(spring)
+	_sign("二楼回廊
+（弹簧板）", Vector3(-13.0, MY + 2.0, -99.0))
+	for z in [-108.0, -116.0, -124.0]:
+		_wreath(Vector3(cx, BALCONY_H, z), 10.0, 0.45, PropsMexico.MARIGOLD.darkened(0.2), "万寿菊花环")
+	_discover("shortcut", "集市二楼回廊", Vector3(cx, BALCONY_H + 1.0, -112.0), Vector3(3.0, 2.0, 2.0))
+	var big := PropsMexico.pinata(PropsMexico.LIME)
+	big.scale = Vector3.ONE * 1.6
+	var holder := Node3D.new()
+	holder.add_child(big)
+	var dr := Traps.Dropper.new(holder, Vector3(cx, BALCONY_H + 4.0, -120.0), BALCONY_H, 0.9)
+	dr.triggered_by(Vector3(cx, BALCONY_H + 1.0, -118.4), Vector3(1.6, 1.2, 0.5))
+	dr.text = "大彩罐砸下来了！"
+	_trap(dr)
+	for x in [b[0] + 0.2, b[1] - 0.2]:
+		_put(PropsMexico.papel_picado(Vector3(x, BALCONY_H + 2.4, b[2]), Vector3(x, BALCONY_H + 2.4, b[3]), 20), Vector3.ZERO)
 
 
 # ---------- 4 花船运河、小岛 ----------
@@ -702,6 +760,15 @@ func _build_canal() -> void:
 	_put(PropsMexico.papel_picado(Vector3(4, MY + 4.0, CANAL[0]), Vector3(4, MY + 4.0, CANAL[1]), 20), Vector3.ZERO)
 	_lamp(Vector3(0, MY + 3.5, -142.0), 1.0, 12.0, Color(1.0, 0.65, 0.4))
 	_sign("等花船靠岸再上", Vector3(0, MY + 2.8, -131.0))
+	var raft := Traps.Mover.new(Vector3(-4.6, MY, -136.4), Vector3(-4.6, MY, -148.4), Vector3(3.0, 0.4, 3.0), 7.0, 4.0, _m.wood)
+	raft.phase = 0.35
+	_trap(raft, "raft")
+	for k in 6:
+		var f := PropsMexico.marigolds(4, 0.2, k)
+		f.position = Vector3(-1.2 + (k % 3) * 1.2, 0.2, -1.2 + (k / 3) * 2.4)
+		raft._body.add_child(f)
+	_sign("万寿菊木筏
+（也能坐）", Vector3(-4.6, MY + 2.6, -131.6))
 
 	# 河中间的小岛：北边是悬崖，下面就是祭坛所在的山谷。小岛伸出去的石桥断了 → 俯视转视角
 	var hw: float = ISLAND[0]
@@ -730,8 +797,16 @@ func _build_valley() -> void:
 	var z1: float = VALLEY[2]
 	var lo := SEAM + _bridge_offset()
 	_floor(Vector3(-hw, AY, z0), Vector3(hw, AY, CENOTE[0]), _m.plaza, 2.0)
-	for s in [-1.0, 1.0]:
-		_wall_z(s * (hw + WALL_T / 2), z1, z0, AY, _m.wall, 1.2)
+	_wall_z(hw + WALL_T / 2, z1, z0, AY, _m.wall, 1.2)
+	_wall_z(-hw - WALL_T / 2, SECRET3_Z[0], z0, AY, _m.wall, 1.2)
+	_wall_z(-hw - WALL_T / 2, z1, SECRET3_Z[1], AY, _m.wall, 1.2)
+	_fake_wall(Vector3(WALL_T, 1.2, SECRET3_Z[0] - SECRET3_Z[1]), Vector3(-hw - WALL_T / 2, AY + 0.6, (SECRET3_Z[0] + SECRET3_Z[1]) / 2))
+	_floor(Vector3(-hw - 2.6, AY, SECRET3_Z[0] + 0.4), Vector3(-hw - WALL_T, AY, SECRET3_Z[1] - 0.4), _m.plaza, 2.0)
+	_wall_z(-hw - 2.6, SECRET3_Z[1] - 0.4, SECRET3_Z[0] + 0.4, AY, _m.wall, 1.2)
+	_wall_x(SECRET3_Z[0] + 0.4, -hw - 2.6, -hw - WALL_T, AY, _m.wall, 1.2)
+	_wall_x(SECRET3_Z[1] - 0.4, -hw - 2.6, -hw - WALL_T, AY, _m.wall, 1.2)
+	_wreath(Vector3(-hw - 1.4, AY, (SECRET3_Z[0] + SECRET3_Z[1]) / 2), 15.0, 0.45, PropsMexico.MARIGOLD.darkened(0.2), "万寿菊花环")
+	_discover("secret", "山谷墙里的小洞", Vector3(-hw - 1.4, AY + 1.0, (SECRET3_Z[0] + SECRET3_Z[1]) / 2), Vector3(1.8, 2.0, 1.8))
 	_wall_x(z0 + WALL_T / 2, -hw, lo.x - 1.6, AY, _m.wall, 1.2)
 	_wall_x(z0 + WALL_T / 2, lo.x + 1.6, hw, AY, _m.wall, 1.2)
 	_wall_x(z1 - WALL_T / 2, -hw, hw, AY, _m.wall, 1.2)
@@ -797,16 +872,69 @@ func _build_valley() -> void:
 	_solid(Vector3(6.0, 1.6, 1.0), Vector3(0, AY + 0.8, z1 + 1.0))
 	for s in [-1.0, 1.0]:
 		_put(PropsMexico.catrina(2.4), Vector3(s * 6.5, AY, z1 + 2.5), 0.0)
-		_put(PropsMexico.cypress(4.0), Vector3(s * 8.3, AY, -213.0))
+		_put(PropsMexico.cypress(4.0), Vector3(s * 8.3, AY, goal_pos.z + 3.0))
 		var cc := PropsMexico.candles(9, 0.2)
-		cc.position = Vector3(s * 4.0, AY, -218.5)
+		cc.position = Vector3(s * 4.0, AY, goal_pos.z - 3.5)
 		add_child(cc)
-	for z in [-172.0, -182.0, -213.0]:
+	for z in [-172.0, -182.0, -237.0]:
 		_put(PropsMexico.papel_picado(Vector3(-hw, AY + 5.5, z), Vector3(hw, AY + 5.5, z), 30), Vector3.ZERO)
-	_lamp(Vector3(0, AY + 3.0, -216.0), 1.4, 12.0, Color(1.0, 0.65, 0.35))
+	_lamp(Vector3(0, AY + 3.0, goal_pos.z), 1.4, 12.0, Color(1.0, 0.65, 0.35))
 	_lamp(Vector3(0, AY + 4.0, -177.0), 1.0, 14.0, Color(1.0, 0.65, 0.35))
 	_lamp(Vector3(0, AY + 4.0, -194.0), 0.9, 10.0, Color(1.0, 0.65, 0.35))
 	_sign("把逝者送上祭坛", goal_pos + Vector3(0, 2.6, 0))
+
+
+# ---------- 6 烟花城堡 ----------
+
+## 天坑和祭坛之间的广场：正中一座烟花塔，一根贴地的转臂（跳过去）和一根齐腰的转臂（只能躲）反着转；
+## 东墙上一排炮台轮流往西打火箭。贴着西墙走转臂够不着，但要一排排躲火箭
+func _build_fireworks() -> void:
+	var hw: float = VALLEY[0]
+	var c := Vector3(0, AY, CASTILLO_Z)
+	_box(Vector3(1.4, 5.0, 1.4), c + Vector3(0, 2.5, 0), PropsMexico.PURPLE, true)
+	for k in 5:
+		var ring := Art.mesh(Art.cylinder(1.0 - k * 0.12, 1.0 - k * 0.12, 0.12, 16),
+			PropsMexico.FLAG_COLORS[k % PropsMexico.FLAG_COLORS.size()], c + Vector3(0, 1.2 + k * 0.9, 0))
+		add_child(ring)
+	var skull := PropsMexico.sugar_skull(1.0)
+	skull.position = c + Vector3(0, 5.0, 0)
+	add_child(skull)
+	var low_arm := func() -> Node3D:
+		var n := Node3D.new()
+		n.add_child(Art.mesh(Art.box(Vector3(0.18, 0.3, FW_ARM - 0.7)), PropsMexico.MARIGOLD, Vector3(0, 0.32, (FW_ARM + 0.7) / 2)))
+		for k in 5:
+			PropsMexico._glow(n, Art.sphere(0.12), PropsMexico.FLAG_COLORS[k], Vector3(0, 0.55, 1.4 + k * 1.1), 4.0)
+		return n
+	var low := Traps.Sweeper.new(c, FW_ARM, 0.15, 0.5, 6.0, 0.0, 2, low_arm)
+	low.text = "被烟花轮的转臂扫飞了！（贴地的那根可以跳过去）"
+	_trap(low, "wheel_low")
+	var high_arm := func() -> Node3D:
+		var n := Node3D.new()
+		n.add_child(Art.mesh(Art.box(Vector3(0.18, 0.3, FW_ARM - 1.2)), PropsMexico.TURQUOISE, Vector3(0, 1.25, (FW_ARM + 0.2) / 2)))
+		PropsMexico._glow(n, Art.sphere(0.2), PropsMexico.MAGENTA, Vector3(0, 1.25, FW_ARM - 0.4), 5.0)
+		return n
+	var high := Traps.Sweeper.new(c, FW_ARM - 0.5, 1.1, 1.4, -8.0, 0.25, 1, high_arm)
+	high.text = "被烟花轮拦腰扫飞了！"
+	_trap(high, "wheel_high")
+	# 东墙的炮台：一排排往西打火箭
+	var rocket := func() -> Node3D:
+		var n := Node3D.new()
+		var body := Art.mesh(Art.cylinder(0.12, 0.12, 0.7, 8), PropsMexico.MAGENTA)
+		body.rotation.z = PI / 2
+		n.add_child(body)
+		PropsMexico._glow(n, Art.sphere(0.16), Color(1.0, 0.7, 0.2), Vector3(0.4, 0, 0), 6.0)
+		return n
+	for k in ROCKETS.size():
+		var z: float = ROCKETS[k]
+		add_child(Art.block(Vector3(0.8, 1.4, 1.0), Vector3(hw - 0.3, AY + 0.7, z), Art.mat(Color(0.3, 0.2, 0.3))))
+		add_child(Art.mesh(Art.cylinder(0.22, 0.22, 0.3, 10), Props.BLACK, Vector3(hw - 0.75, AY + 1.0, z)))
+		var tr := Traps.Shooter.new(Vector3(hw - 0.2, AY + 1.0, z), Vector3(-hw + 0.2, AY + 1.0, z), 9.0, 3.2, k * 0.25, 0.25, rocket)
+		tr.text = "被火箭炸飞了！"
+		_trap(tr, "rocket%d" % k)
+	_wreath(Vector3(0, AY, CASTILLO_Z + 3.5), 15.0, 0.45, PropsMexico.MARIGOLD.darkened(0.2), "万寿菊花环")  # 烟花塔脚下
+	_wreath(Vector3(5.0, AY, ROCKETS[2]), 10.0, 0.45, PropsMexico.MARIGOLD.darkened(0.2), "万寿菊花环")  # 火箭道正中
+	_sign("烟花城堡\n贴地的转臂跳过去，齐腰的只能躲", Vector3(-7.2, AY + 2.8, CENOTE[1] - 1.0))
+	_lamp(Vector3(0, AY + 6.0, CASTILLO_Z), 1.6, 16.0, Color(1.0, 0.5, 0.7))
 
 
 func _build_backdrop() -> void:

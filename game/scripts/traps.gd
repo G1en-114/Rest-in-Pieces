@@ -240,6 +240,8 @@ class Spring extends Trap:
 					if b in group:
 						for body in group:
 							body.linear_velocity = launch
+							if body is Bearer:
+								body.fly = 1.8
 				level.notice.emit(text)
 				return
 
@@ -576,3 +578,53 @@ class Shooter extends Trap:
 				if s > s0 - radius - 0.8 and s < s1 + radius + 0.8:
 					return false
 			return true)
+
+
+## 转臂：绕着 hub 转的长臂，扫到人就撞飞。bottom ~ top 是臂离地的高度：贴地的臂可以跳过去
+class Sweeper extends Trap:
+	var hub: Vector3
+	var length: float
+	var bottom: float
+	var top: float
+	var period: float
+	var phase: float
+	var arms := 1
+	var text := "被转臂扫飞了！"
+	var _rotor := Node3D.new()
+
+	## period < 0 就是反着转；make：造一条臂外观的函数（沿 +Z 伸出去、从轴心开始）
+	func _init(c: Vector3, len_m: float, y0: float, y1: float, p: float, ph: float, n_arms: int, make: Callable) -> void:
+		hub = c
+		length = len_m
+		bottom = y0
+		top = y1
+		period = p
+		phase = ph
+		arms = n_arms
+		_rotor.position = hub
+		for k in arms:
+			var arm: Node3D = make.call()
+			arm.rotation.y = TAU * k / arms
+			_rotor.add_child(arm)
+		add_child(_rotor)
+
+	func angle(t: float) -> float:
+		return TAU * (t / period + phase)
+
+	func sim(t: float) -> void:
+		_rotor.rotation.y = angle(t)
+
+	func host(g: Node, t: float) -> void:
+		for k in arms:
+			var a := angle(t) + TAU * k / arms
+			var dir := Vector2(sin(a), cos(a))
+			var tan := Vector2(cos(a), -sin(a)) * signf(period)
+			for b in g.bearers:
+				var p: Vector3 = b.global_position
+				var d := Vector2(p.x - hub.x, p.z - hub.z)
+				var along := d.dot(dir)
+				var feet := p.y - 0.87 - hub.y
+				if along > 0.5 and along < length + 0.2 and absf(d.dot(tan)) < 0.45 \
+						and feet < top - 0.05 and feet + 1.75 > bottom:
+					var speed := maxf(TAU / absf(period) * along * 1.5, 5.0)
+					_hit(b, Vector3(tan.x, 0, tan.y) * speed + Vector3(dir.x, 0, dir.y) * 2.0 + Vector3.UP * 5.0, t, text)

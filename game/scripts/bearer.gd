@@ -46,6 +46,7 @@ var traction := 1.0  # 抓地力：踩在湿地板上会变小，起步刹车都
 var speed_scale := 1.0  # 走路速度倍数：沙地、流沙里会变小
 var ground_velocity := Vector3.ZERO  # 脚下踩着的东西（船）的速度：走路速度是相对它算的
 var stun := 0.0  # 被机关撞飞后还要晕多久：这段时间不走路、不站直、抓不住东西，任由身体乱滚
+var fly := 0.0  # 被弹簧板弹起来以后：落地之前不用走路的力刹车，按抛物线飞
 var puppet := false  # 联机客户端：不算物理，位置和 bend 都由房主的快照填写
 var _jump_was_down := false
 var _model: Node3D
@@ -145,10 +146,15 @@ func _physics_process(delta: float) -> void:
 	var grounded := _is_grounded()
 
 	# 移动：力作用在腰部以下，起步和刹车时身体会自己晃
-	var vel_h := Vector3(linear_velocity.x, 0, linear_velocity.z)
-	var force := (dir * SPEED * speed_scale + ground_velocity - vel_h) * mass * MOVE_ACCEL * traction
-	force = force.limit_length(MOVE_MAX_FORCE * traction * (1.0 if grounded else 0.25))
-	apply_force(force, global_basis.y * -0.45)
+	if fly > 0.0:
+		fly -= delta
+		if grounded and fly < 1.5:
+			fly = 0.0
+	else:
+		var vel_h := Vector3(linear_velocity.x, 0, linear_velocity.z)
+		var force := (dir * SPEED * speed_scale + ground_velocity - vel_h) * mass * MOVE_ACCEL * traction
+		force = force.limit_length(MOVE_MAX_FORCE * traction * (1.0 if grounded else 0.25))
+		apply_force(force, global_basis.y * -0.45)
 
 	# 保持站立：力度有限，负重太大就会被压歪
 	var av := angular_velocity

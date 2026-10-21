@@ -21,9 +21,9 @@ const CENSERS := [29.0, 26.0, 23.0]
 const FAKE1_Z := [25.5, 23.9]  # 西边过道的假地板
 const SECRET1_Z := [19.2, 20.8]  # 西墙上那段假墙
 const WARE_Z := [18.0, 4.0]  # 纸扎仓库的南、北边
-const WARE_INNER := [6.2, 16.0]  # 通道和货架区之间那道隔墙的范围
+const WARE_INNER := [6.2, 15.4]  # 通道和货架区之间那道隔墙的范围
 const MEZZ_H := 2.8  # 二楼货架走廊的高度
-const MEZZ_Z := [16.5, 7.5]
+const MEZZ_Z := [17.85, 7.5]
 const WAVE_PERIOD := 4.0
 const GOAL := Vector3(-29, -4.63, -8.69)
 const ALIGN_YAW := 135.0  # 固定视角转到这个角度，断桥才接得上
@@ -360,15 +360,16 @@ func _build_warehouse() -> void:
 	_trap(cr, "crusher")
 	add_child(Art.block(Vector3(4.0, 0.3, 1.4), Vector3(0, 4.6, 9.2), Art.mat(Props.BLACK)))
 	# 货架区：弹簧板 → 二楼货架走廊 → 一摞纸箱 → 下来回到通道尽头
-	var spring := Traps.Spring.new(Vector3(-3.2, 0, 15.4), Vector2(1.3, 1.3), Vector3(-2.6, 8.6, -0.8))
+	var spring := Traps.Spring.new(Vector3(-3.2, 0, 15.4), Vector2(1.3, 1.3), Vector3(-4.6, 8.6, -0.8))
 	spring.text = "嘣——整队被弹上了二楼！"
 	_trap(spring)
 	_sign("弹簧板\n（请勿抬棺踩踏）", Vector3(-3.2, 2.2, 16.4))
-	_floor(Vector3(-8, MEZZ_H, MEZZ_Z[0]), Vector3(-4.6, MEZZ_H, MEZZ_Z[1]), _m.corridor, 0.4)
-	_floor(Vector3(-8, 1.4, MEZZ_Z[1]), Vector3(-4.6, 1.4, MEZZ_Z[1] - 1.5), _m.corridor, 1.4)  # 一摞纸箱
-	_wall_x(MEZZ_Z[0], -8.0, -4.6, MEZZ_H, null, 1.0)
+	_floor(Vector3(-8, MEZZ_H, MEZZ_Z[0]), Vector3(-4.2, MEZZ_H, MEZZ_Z[1]), _m.corridor, 0.4)
+	_floor(Vector3(-8, 1.4, MEZZ_Z[1]), Vector3(-4.2, 1.4, MEZZ_Z[1] - 1.5), _m.corridor, 1.4)  # 一摞纸箱
+	_rail(Vector3(-7.9, MEZZ_H, MEZZ_Z[0]), Vector3(-7.9, MEZZ_H, MEZZ_Z[1]))  # 二楼比外墙高：两边要有栏杆
+	_rail(Vector3(-4.3, MEZZ_H, 12.6), Vector3(-4.3, MEZZ_H, MEZZ_Z[1]))
 	for z in [MEZZ_Z[0] - 1.0, (MEZZ_Z[0] + MEZZ_Z[1]) / 2, MEZZ_Z[1] + 1.0]:
-		add_child(Art.block(Vector3(0.2, MEZZ_H, 0.2), Vector3(-4.7, MEZZ_H / 2, z), Art.mat(Props.WOOD)))
+		add_child(Art.block(Vector3(0.2, MEZZ_H, 0.2), Vector3(-4.3, MEZZ_H / 2, z), Art.mat(Props.WOOD)))
 	_discover("shortcut", "二楼货架", Vector3(-6.3, MEZZ_H + 1.0, (MEZZ_Z[0] + MEZZ_Z[1]) / 2), Vector3(3.0, 2.0, 2.0))
 	_wreath(Vector3(-6.3, MEZZ_H, MEZZ_Z[0] - 2.0), 10.0, 0.5)
 	var horse := Props.paper_car()
@@ -662,6 +663,17 @@ func _build_bridge() -> void:
 		_floor(Vector3(-13.0, 0, z - 0.45), Vector3(-12.0, 0, z + 0.45), _m.bridge, BRIDGE_THICK, false)
 		_put(Props.stone_lion(), Vector3(-12.5, 0, z), PI / 2 + s * 0.3)
 	_sign("桥断了？\n按 Q / E 转动视角试试", Vector3(-13.5, 2.4, BRIDGE_Z))
+
+
+## 一道矮栏（有碰撞，不算硬物）：a、b 是两端的地面点
+func _rail(a: Vector3, b: Vector3, h := 1.0) -> void:
+	var size := Vector3(maxf(absf(b.x - a.x), 0.16), h, maxf(absf(b.z - a.z), 0.16))
+	var c := (a + b) / 2 + Vector3(0, h / 2, 0)
+	_solid(size, c)
+	add_child(Art.mesh(Art.box(Vector3(size.x, 0.1, size.z) + Vector3(0.04, 0, 0.04)), Props.WOOD, c + Vector3(0, h / 2 - 0.05, 0)))
+	var n := int(maxf(size.x, size.z) / 0.8) + 1
+	for k in n + 1:
+		add_child(Art.mesh(Art.box(Vector3(0.1, h, 0.1)), Props.WOOD, a.lerp(b, float(k) / n) + Vector3(0, h / 2, 0)))
 
 
 func _railing(start: Vector3, length: float) -> void:

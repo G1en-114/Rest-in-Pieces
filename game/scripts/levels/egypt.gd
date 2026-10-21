@@ -6,7 +6,10 @@ extends Level
 ##   2 飞镖甬道：按节奏射的三排 → 往西拐，机关砖（踩了 0.6 秒后放箭，不能停）→ 往南拐，更密的三排
 ##   3 塌陷地板：大厅（站 1 秒就塌）→ 之字形窄桥（塌得更快）→ 身后一排排追着塌，跑！
 ##   4 封印石门：推石块压住压力板开第一道门 → 第二道门踩一下就开，但松开 7 秒就关，门在 11 米外
-##   5 法老墓室（之后挪到整关最后）
+##   5 滚石长廊：中线上一个接一个滚下来的石球，横倒的巨石逼你来回穿过它
+##   6 刀摆深渊：摆刀窄桥（快）或者坐木筏（慢）
+##   7 法老墓室：石棺前面的地板是假的
+## 另外：沙堆迷宫边上有弹簧板能直接弹过去（近路），沙丘东头的花环头顶悬着落石，飞镖甬道西墙有一段是假的
 ##
 ## 机关都按时间或状态算：
 ##   - 飞镖、风：按 tick(t) 的时间算，房主和加入方各算各的；机关砖什么时候被踩的放进 net_state()
@@ -40,6 +43,7 @@ const DART_HIT_RADIUS := 0.32
 const TRAP_DELAY := 0.6  # 机关砖被踩后多久放箭
 const TRAP_XS := [-4.0, -7.0, -10.0, -13.0]
 const RAMP_Z := [-84.0, -90.0]  # 甬道尽头往下的斜坡
+const SECRET2_Z := [-50.6, -52.4]  # A 段西墙上那段假墙
 # ---- 3 塌陷地板 ----
 const HALL_Y := -1.5
 const TILE := 1.4
@@ -62,8 +66,22 @@ const BLOCK_START := Vector3(-13.0, HALL_Y + 0.5, -140.1)
 const PLATE2 := Vector3(-19.0, HALL_Y, -151.1)
 const DOOR2_CLOSE_TIME := 7.0
 const PLATE_SIZE := 1.6
-# ---- 5 墓室 ----
-const TOMB_Z := [-162.6, -174.6]
+# ---- 5 滚石长廊 ----
+const BOULDER_Z := [-162.6, -192.0]
+const BOULDER_HALF := 4.0
+const BOULDER_R := 0.95
+const BOULDER_END := -167.0  # 石球滚到这里掉进铁栅栏
+const BLOCKS := [[-4.0, -1.1, -170.0, -172.0], [1.1, 4.0, -178.0, -180.0], [-4.0, -1.1, -186.0, -188.0]]  # 横倒的巨石：[x0, x1, z0, z1]（x 相对中线）
+const EXIT5 := [1.4, 4.0]  # 北墙出口（x 相对中线）
+# ---- 6 刀摆深渊 ----
+const ABYSS_Z := [-192.0, -215.0]
+const PIT_Z := [-195.0, -211.0]
+const BLADE_X := -2.7  # 摆刀桥中线（相对 WEST_X）
+const RAFT_X := 2.4
+const BLADES := [-199.0, -203.0, -207.0]
+# ---- 7 墓室 ----
+const TOMB_Z := [-215.0, -227.0]
+const TOMB_FAKE := [-1.2, 1.0, -218.0, -220.2]  # 石棺前面那块假地板：[x0, x1, z0, z1]（x 相对中线）
 
 var _time := 0.0
 var _lanes: Array = []  # 每条飞镖道：{origin, dir, spread, span, volleys, period, offset, trap, fire_at, tile}
@@ -82,9 +100,9 @@ var _said := {}
 func _init() -> void:
 	id = "egypt"
 	title = "法老的最后一程"
-	par_time = 20.0 * 60.0
+	par_time = 25.0 * 60.0
 	kill_y = -9.0
-	goal_pos = Vector3(WEST_X - 1.6, HALL_Y, -170.1)  # 石棺靠西边放：棺材要顺着长边推上去，抬棺人走在两侧
+	goal_pos = Vector3(WEST_X - 1.6, HALL_Y, -222.5)  # 石棺靠西边放：棺材要顺着长边推上去，抬棺人走在两侧
 	goal_size = Vector3(2.0, 0.85, 1.0)
 	rooms = [
 		{name = "沙漠入口", spawn = Vector3(0, 0, 3), lift = 1.32, yaw = 0.0,
@@ -105,9 +123,16 @@ func _init() -> void:
 		{name = "封印石门", spawn = Vector3(WEST_X, HALL_Y, -138.1), yaw = 0.0,
 			path = [Vector3(BLOCK_START.x, 0, -138.5), Vector3(BLOCK_START.x, 0, PLATE1.z + 1.6), "wait:door0",
 				Vector3(BLOCK_START.x, 0, -141.6), Vector3(WEST_X, 0, -142.6), Vector3(WEST_X, 0, DOOR1_Z - 1.0),
-				Vector3(PLATE2.x, 0, PLATE2.z), "wait:door1", Vector3(WEST_X, 0, -155.6), Vector3(WEST_X, 0, -164.4)]},
-		{name = "法老墓室", spawn = Vector3(WEST_X, HALL_Y, -164.4), yaw = 0.0,
-			path = [Vector3(WEST_X + 2.4, 0, -168.1), Vector3(WEST_X + 2.4, 0, goal_pos.z), goal_pos]},
+				Vector3(PLATE2.x, 0, PLATE2.z), "wait:door1", Vector3(WEST_X, 0, -155.6), Vector3(WEST_X, 0, -163.3)]},
+		{name = "滚石长廊", spawn = Vector3(WEST_X, HALL_Y, -163.6), yaw = 0.0,
+			path = ["wait:trap:boulder:1.8:22_26", Vector3(WEST_X + 2.4, 0, -166.5), Vector3(WEST_X + 2.4, 0, -172.6),
+				"wait:trap:boulder:2.2:17.5_21.5", Vector3(WEST_X - 2.4, 0, -173.4), Vector3(WEST_X - 2.4, 0, -180.6),
+				"wait:trap:boulder:2.2:9.5_13.5", Vector3(WEST_X + 2.4, 0, -181.5), Vector3(WEST_X + 2.6, 0, -193.6)]},
+		{name = "刀摆深渊", spawn = Vector3(WEST_X + RAFT_X, HALL_Y, -193.6), yaw = 0.0,
+			path = [Vector3(WEST_X + RAFT_X, 0, -193.9), "wait:trap:raft:3.0:a", Vector3(WEST_X + RAFT_X, 0, -197.0),
+				"wait:trap:raft:2.2:b", Vector3(WEST_X + RAFT_X, 0, -211.8), Vector3(WEST_X, 0, -212.6), Vector3(WEST_X, 0, -213.8)]},
+		{name = "法老墓室", spawn = Vector3(WEST_X, HALL_Y, -216.4), yaw = 0.0,
+			path = [Vector3(WEST_X, 0, -216.4), Vector3(WEST_X + 2.4, 0, -216.4), Vector3(WEST_X + 2.4, 0, goal_pos.z), goal_pos]},
 	]
 
 
@@ -140,6 +165,8 @@ func _ready() -> void:
 	_build_dart_corridor()
 	_build_tile_rooms()
 	_build_door_room()
+	_build_boulder_hall()
+	_build_abyss()
 	_build_tomb()
 	_build_backdrop()
 
@@ -153,7 +180,11 @@ func room_at(p: Vector3) -> int:
 		return 2
 	if p.z > DOOR_ROOM_Z[1] - 0.5:
 		return 3
-	return 4
+	if p.z > BOULDER_Z[1] - 0.5:
+		return 4
+	if p.z > ABYSS_Z[1] + 2.0:
+		return 5
+	return 6
 
 
 # ---------- 每帧的机关 ----------
@@ -306,6 +337,12 @@ func _build_desert() -> void:
 	_put(PropsEgypt.sphinx(5.5), Vector3(-6.0, DUNE_H - 0.6, -15.2), 0.0)
 	_solid(Vector3(3.0, 2.4, 3.8), Vector3(-6.0, DUNE_H + 0.6, -15.2))
 	_wreath(Vector3(7.6, DUNE_H, -12.0), 10.0, 0.5, Color(0.25, 0.55, 0.45), "莲花环")  # 沙丘东头：绕过去拿
+	var rock := Art.mesh(Art.sphere(0.8), PropsEgypt.SANDSTONE.darkened(0.2), Vector3(0, 0.8, 0))
+	var holder := Node3D.new()
+	holder.add_child(rock)
+	var drop := Traps.Dropper.new(holder, Vector3(7.6, DUNE_H + 5.0, -12.0), DUNE_H, 0.9)
+	drop.text = "落石！"
+	_trap(drop)
 	_sign("沙地会拖慢脚步", Vector3(0, 3.2, -4.0))
 
 	# 沙堆迷宫：两道沙堆墙，只能 S 形绕过去
@@ -321,6 +358,11 @@ func _build_desert() -> void:
 	_put(PropsEgypt.pot(), Vector3(-8.0, 0, -18.8))
 	_put(PropsEgypt.pot(PropsEgypt.SANDSTONE), Vector3(8.0, 0, -28.4))
 	_wreath(Vector3(-8.0, 0, -24.0), 10.0, 0.5, Color(0.25, 0.55, 0.45), "莲花环")  # 迷宫西头的死角
+	var spring := Traps.Spring.new(Vector3(-3.0, 0, -19.2), Vector2(1.4, 1.2), Vector3(0, 7.6, -7.2), PropsEgypt.LAPIS)
+	spring.text = "嘣——直接飞过沙堆！"
+	_trap(spring)
+	_sign("圣甲虫弹簧", Vector3(-3.0, 2.0, -18.6))
+	_discover("shortcut", "飞过沙堆", Vector3(-1.0, 3.4, -26.2), Vector3(9.0, 2.6, 3.0))
 
 	# 风沙广场：断墙挡风，东边是悬崖
 	for s in SHELTERS:
@@ -470,7 +512,15 @@ func _build_dart_corridor() -> void:
 	var s_wall := TURN_Z - h
 	# A 段：南北向，三排节奏飞镖
 	_floor(Vector3(-h, 0, GATE_Z), Vector3(h, 0, n_wall), _m.paving, 3.0)
-	_wall_z(-h - wt, GATE_Z, n_wall, 0.0, _m.wall)
+	_wall_z(-h - wt, GATE_Z, SECRET2_Z[0], 0.0, _m.wall)
+	_wall_z(-h - wt, SECRET2_Z[1], n_wall, 0.0, _m.wall)
+	_fake_wall(Vector3(WALL_T, WALL_H, SECRET2_Z[0] - SECRET2_Z[1]), Vector3(-h - wt, WALL_H / 2, (SECRET2_Z[0] + SECRET2_Z[1]) / 2))
+	_floor(Vector3(-h - 2.6, 0, SECRET2_Z[0] + 0.4), Vector3(-h - WALL_T, 0, SECRET2_Z[1] - 0.4), _m.paving, 3.0)
+	_wall_z(-h - 2.6, SECRET2_Z[1] - 0.4, SECRET2_Z[0] + 0.4, 0.0, _m.wall)
+	_wall_x(SECRET2_Z[0] + 0.4, -h - 2.6, -h - WALL_T, 0.0, _m.wall)
+	_wall_x(SECRET2_Z[1] - 0.4, -h - 2.6, -h - WALL_T, 0.0, _m.wall)
+	_wreath(Vector3(-h - 1.4, 0, (SECRET2_Z[0] + SECRET2_Z[1]) / 2), 15.0, 0.45, Color(0.25, 0.55, 0.45), "莲花环")
+	_discover("secret", "墙里的暗室", Vector3(-h - 1.4, 1.0, (SECRET2_Z[0] + SECRET2_Z[1]) / 2), Vector3(1.8, 2.0, 1.8))
 	_wall_z(h + wt, GATE_Z, s_wall, 0.0, _m.wall)
 	for i in 3:
 		_periodic_row(0.0, [-48.0, -53.0, -58.0][i], 1.0 if i % 2 == 0 else -1.0, 4.0, i * 1.3, 3)
@@ -726,23 +776,115 @@ func _set_plate(door: Dictionary, down: bool) -> void:
 	door.plate_mesh.position.y = door.plate.y - (0.03 if down else 0.0)
 
 
-# ---------- 法老墓室（之后挪到整关最后）----------
+# ---------- 5 滚石长廊 ----------
+
+## 中线上每隔几秒从北墙的洞里滚出一个大石球，一直滚到南头的铁栅栏掉下去。
+## 长廊里横倒着三块巨石，一会儿挡东边一会儿挡西边，逼着你来回穿过石球滚的那条线
+func _build_boulder_hall() -> void:
+	var z0: float = BOULDER_Z[0]
+	var z1: float = BOULDER_Z[1]
+	var h := BOULDER_HALF
+	_floor(Vector3(WEST_X - h, HALL_Y, z0), Vector3(WEST_X + h, HALL_Y, z1), _m.paving, 2.0)
+	for s in [-1.0, 1.0]:
+		_wall_z(WEST_X + s * (h + WALL_T / 2), z1, z0, HALL_Y, _m.wall, WALL_H + 0.6)
+		for z in [-168.0, -176.0, -184.0]:
+			_put(PropsEgypt.torch(), Vector3(WEST_X + s * h, HALL_Y + 1.15, z), -s * PI / 2)
+	_wall_x(z1, WEST_X - h, WEST_X + EXIT5[0], HALL_Y, _m.wall, WALL_H + 0.6)
+	add_child(Art.block(Vector3(2.4, 2.4, 0.05), Vector3(WEST_X, HALL_Y + 1.2, z1 + 0.17), Art.mat(Color(0.05, 0.03, 0.02))))  # 石球出来的黑洞
+	add_child(Art.block(Vector3(3.0, 0.05, 1.6), Vector3(WEST_X, HALL_Y + 0.03, BOULDER_END), Art.mat(Color(0.12, 0.1, 0.08))))  # 南头的铁栅栏
+	for k in 5:
+		add_child(Art.mesh(Art.box(Vector3(0.08, 0.06, 1.6)), PropsEgypt.DARK_STONE, Vector3(WEST_X - 1.2 + k * 0.6, HALL_Y + 0.06, BOULDER_END)))
+	for b in BLOCKS:
+		var size := Vector3(b[1] - b[0], 1.6, absf(b[3] - b[2]))
+		var c := Vector3(WEST_X + (b[0] + b[1]) / 2, HALL_Y + 0.8, (b[2] + b[3]) / 2)
+		_collider(size, c, true)
+		add_child(Art.block(size, c, _m.low_wall))
+		_put(PropsEgypt.column(1.0, 0.3), c + Vector3(0, 0.8, 0))
+	var ball := func() -> Node3D:
+		var n := Node3D.new()
+		n.add_child(Art.mesh(Art.sphere(BOULDER_R), PropsEgypt.SANDSTONE.darkened(0.15)))
+		n.add_child(Art.mesh(Art.box(Vector3(BOULDER_R * 2.02, 0.12, 0.3)), PropsEgypt.DARK_STONE))  # 一道刻痕，看得出在滚
+		return n
+	var tr := Traps.Shooter.new(Vector3(WEST_X, HALL_Y + BOULDER_R, z1 - 0.5), Vector3(WEST_X, HALL_Y + BOULDER_R, BOULDER_END),
+		6.0, 4.5, 0.0, BOULDER_R, ball)
+	tr.roll = true
+	tr.text = "被滚石撞飞了！"
+	_trap(tr, "boulder")
+	_wreath(Vector3(WEST_X - 3.2, HALL_Y, -175.0), 10.0, 0.45, Color(0.25, 0.55, 0.45), "莲花环")
+	_sign("石球滚过来了！躲到巨石后面", Vector3(WEST_X, HALL_Y + 3.0, z0 - 1.0))
+
+
+# ---------- 6 刀摆深渊 ----------
+
+## 一个大坑，两条路：东边是窄石桥，桥上三把摆刀来回荡（快）；西边坐来回开的木筏（慢但稳）
+func _build_abyss() -> void:
+	var z0: float = ABYSS_Z[0]
+	var z1: float = ABYSS_Z[1]
+	var h := BOULDER_HALF
+	_floor(Vector3(WEST_X - h, HALL_Y, z0), Vector3(WEST_X + h, HALL_Y, PIT_Z[0]), _m.paving, 2.0)
+	_floor(Vector3(WEST_X - h, HALL_Y, PIT_Z[1]), Vector3(WEST_X + h, HALL_Y, z1), _m.paving, 2.0)
+	for s in [-1.0, 1.0]:
+		_wall_z(WEST_X + s * (h + WALL_T / 2), PIT_Z[0], z0, HALL_Y, _m.wall, WALL_H + 0.6)  # 坑上面不要墙，免得挡住视线
+		_wall_z(WEST_X + s * (h + WALL_T / 2), z1, PIT_Z[1], HALL_Y, _m.wall, WALL_H + 0.6)
+	# 东：摆刀石桥
+	var bx: float = WEST_X + BLADE_X
+	_floor(Vector3(bx - 1.2, HALL_Y, PIT_Z[0]), Vector3(bx + 1.2, HALL_Y, PIT_Z[1]), _m.tomb, 1.0)
+	add_child(Art.block(Vector3(2.8, 0.4, PIT_Z[0] - PIT_Z[1]), Vector3(bx, HALL_Y + 5.2, (PIT_Z[0] + PIT_Z[1]) / 2), _m.wall))
+	for k in BLADES.size():
+		var head := Node3D.new()
+		var blade := Art.mesh(Art.box(Vector3(1.5, 0.5, 0.08)), PropsEgypt.GOLD)
+		head.add_child(blade)
+		head.add_child(Art.mesh(Art.box(Vector3(1.55, 0.1, 0.1)), PropsEgypt.DARK_STONE, Vector3(0, 0.25, 0)))
+		var tr := Traps.Pendulum.new(Vector3(bx, HALL_Y + 5.0, BLADES[k]), 4.3, Vector3.RIGHT, 0.75, 3.0, k * 0.33, head, 0.55,
+			PropsEgypt.DARK_STONE)
+		tr.text = "被摆刀扫飞了！"
+		_trap(tr, "blade%d" % k)
+	_sign("近路：躲开摆刀", Vector3(bx, HALL_Y + 2.6, PIT_Z[0] + 0.8))
+	# 西：木筏
+	var rx: float = WEST_X + RAFT_X
+	var raft := Traps.Mover.new(Vector3(rx, HALL_Y, PIT_Z[0] - 1.8), Vector3(rx, HALL_Y, PIT_Z[1] + 1.8),
+		Vector3(3.2, 0.5, 3.2), 5.0, 4.0, _m.tomb)
+	_trap(raft, "raft")
+	_sign("等木筏靠岸再上", Vector3(rx, HALL_Y + 2.6, PIT_Z[0] + 0.8))
+	# 坑底的尖刺（只是看的）
+	for i in 18:
+		add_child(Art.mesh(Art.cylinder(0.0, 0.25, 1.2, 4), PropsEgypt.DARK_STONE,
+			Vector3(WEST_X - 3.4 + (i % 6) * 1.35, HALL_Y - 6.0, PIT_Z[0] - 1.5 - (i / 6) * 5.0 - (i % 2) * 1.2)))
+	_wreath(Vector3(bx, HALL_Y, (PIT_Z[0] + PIT_Z[1]) / 2), 15.0, 0.45, Color(0.25, 0.55, 0.45), "莲花环")  # 摆刀桥正中间
+	_discover("shortcut", "摆刀桥", Vector3(bx, HALL_Y + 1.0, PIT_Z[1] + 2.0), Vector3(2.4, 2.0, 1.5))
+	for s in [-1.0, 1.0]:
+		_put(PropsEgypt.torch(), Vector3(WEST_X + s * h, HALL_Y + 1.15, z0 - 1.5), -s * PI / 2)
+		_put(PropsEgypt.torch(), Vector3(WEST_X + s * h, HALL_Y + 1.15, z1 + 1.5), -s * PI / 2)
+	_wall_x(z1, WEST_X - h, WEST_X - 1.8, HALL_Y, _m.tomb_wall)
+	_wall_x(z1, WEST_X + 1.8, WEST_X + h, HALL_Y, _m.tomb_wall)
+
+
+# ---------- 7 法老墓室 ----------
 
 func _build_tomb() -> void:
 	var z0: float = TOMB_Z[0]
 	var z1: float = TOMB_Z[1]
 	var half := 4.0
-	_floor(Vector3(WEST_X - half, HALL_Y, z0), Vector3(WEST_X + half, HALL_Y, z1), _m.gold_floor, 2.0)
+	# 地面：石棺正前方那块是假的（踩上去就塌）
+	var f: Array = TOMB_FAKE
+	_floor(Vector3(WEST_X - half, HALL_Y, z0), Vector3(WEST_X + half, HALL_Y, f[2]), _m.gold_floor, 2.0)
+	_floor(Vector3(WEST_X - half, HALL_Y, f[3]), Vector3(WEST_X + half, HALL_Y, z1), _m.gold_floor, 2.0)
+	_floor(Vector3(WEST_X - half, HALL_Y, f[2]), Vector3(WEST_X + f[0], HALL_Y, f[3]), _m.gold_floor, 2.0)
+	_floor(Vector3(WEST_X + f[1], HALL_Y, f[2]), Vector3(WEST_X + half, HALL_Y, f[3]), _m.gold_floor, 2.0)
+	var fake := Traps.FakeFloor.new(Vector3(WEST_X + f[0], HALL_Y, f[2]), Vector3(WEST_X + f[1], HALL_Y, f[3]), _m.gold_floor, 2.0)
+	fake.down = 6.0
+	_trap(fake)
+	_sign("终于到了！\n直接走过去就好", Vector3(WEST_X, HALL_Y + 2.6, z0 - 1.2))
 	var wx := half + WALL_T / 2
 	for s in [-1.0, 1.0]:
 		_wall_z(WEST_X + s * wx, z1, z0, HALL_Y, _m.tomb_wall)
-		_put(PropsEgypt.torch(), Vector3(WEST_X + s * half, HALL_Y + 1.15, -167.6), -s * PI / 2)
+		_put(PropsEgypt.torch(), Vector3(WEST_X + s * half, HALL_Y + 1.15, z0 - 5.0), -s * PI / 2)
 		_put(PropsEgypt.column(2.8), Vector3(WEST_X + s * (half - 0.6), HALL_Y, z1 + 0.8))
 		_solid(Vector3(0.7, 2.8, 0.7), Vector3(WEST_X + s * (half - 0.6), HALL_Y + 1.4, z1 + 0.8))
 		for k in 3:
 			_put(PropsEgypt.canopic_jar([Color(0.85, 0.75, 0.55), PropsEgypt.BLACK, PropsEgypt.TURQUOISE][k]),
 				Vector3(WEST_X + s * 3.4, HALL_Y, goal_pos.z - 0.9 + k * 0.4))
-		_put(PropsEgypt.gold_pile(), Vector3(WEST_X + s * 3.0, HALL_Y, z0 - 3.0))
+		_put(PropsEgypt.gold_pile(), Vector3(WEST_X + s * 3.0, HALL_Y, z0 - 2.0))
 	_wall_x(z1, WEST_X - wx, WEST_X + wx, HALL_Y, _m.tomb_wall)
 	# 灵台就是法老的石棺
 	_collider(goal_size, goal_pos + Vector3(0, goal_size.y / 2, 0), false)

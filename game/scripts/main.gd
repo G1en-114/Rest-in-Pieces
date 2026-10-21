@@ -19,6 +19,7 @@ extends Node3D
 ##   --noalign      配 --bot：不转视角直接走上断桥（应该掉下去）
 ##   --nowait       配 --bot：路线里的 "wait:" 都不等（测机关会不会伤人）
 ##   --stopat=N     配 --bot：走到第 N 个路线点就站着不动（测塌陷地板之类）
+##   --botpath=x,z;x,z  配 --bot：不走房间路线，改走这几个点（测弹簧板、近路之类），走完每秒打印位置
 ##   --lonetest     同 --bot，但 2 号空着手自己过断桥（测试单人过桥不掉下去）
 ##   --solotest     单人模式自动测试：抓起 → 走 → 扔到地上 → 弯腰捡起 → 再抬起来
 ##   --solo / --fp  直接进入单人模式 / 并切到第一人称（放在 --join 后面则是联机加入方用第一人称）
@@ -47,7 +48,7 @@ const FP_EYE_HEIGHT := 0.8
 const ORTHO_SIZE := 15.0
 const DELIVER_TILT := 25.0  # 送达时棺材倾角要小于这个
 const DELIVER_HOLD := 1.5  # 稳稳停在灵台上这么久算送达
-static var NET_VERSION := "2026-10-21b"  # 联机两边版本不一样就拒绝连接（改了联机协议或关卡就改这个；--netversion= 可以假装别的版本来测）
+static var NET_VERSION := "2026-10-21c"  # 联机两边版本不一样就拒绝连接（改了联机协议或关卡就改这个；--netversion= 可以假装别的版本来测）
 const VIEWFINDER_FOV := 50.0  # 举起相机时镜头拉近一点
 ## 天空、雾、太阳的默认值（中式关的黄昏），关卡的 env() 可以覆盖其中任意几项
 const ENV_DEFAULT := {
@@ -105,6 +106,7 @@ var _partner_formed := false
 var _partner_offset := Vector3.ZERO
 var _coffin_falling := false
 var _bot_path: Array = []
+var _bot_custom: Array = []  # --botpath= 给的路线
 var _bot_wp := 0
 var _bot_lower_timer := 0.0
 var _altar_hint_shown := false
@@ -166,6 +168,9 @@ func _ready() -> void:
 			bot_delay = float(arg.get_slice("=", 1))
 		elif arg.begins_with("--stopat="):
 			bot_stopat = int(arg.get_slice("=", 1))
+		elif arg.begins_with("--botpath="):
+			for pt in arg.get_slice("=", 1).split(";"):
+				_bot_custom.append(Vector3(pt.get_slice(",", 0).to_float(), 0, pt.get_slice(",", 1).to_float()))
 		elif arg == "--lonetest":
 			bot = true
 			lonetest = true
@@ -266,6 +271,10 @@ func _ready() -> void:
 	if bot:
 		for i in range(room, level.rooms.size() if _room_test < 0 else room + 1):
 			_bot_path.append_array(level.rooms[i].path)
+		if not _bot_custom.is_empty():
+			_bot_path = _bot_custom
+			_room_test = -1
+			bot_stopat = _bot_custom.size()
 
 	var spawn := _spawn_point(room)
 	cam_fixed = Camera3D.new()
