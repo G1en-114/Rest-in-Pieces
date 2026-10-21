@@ -218,6 +218,9 @@ func _ready() -> void:
 	_waiting = mode == "online" and net_role == "client" and level_id == ""
 
 	level = Level.create(level_id) if level_id else null
+	if level == null and level_id and bot:
+		print("LEVEL_LOAD_FAILED ", level_id)  # 自动测试别悄悄换成中式关
+		get_tree().quit(1)
 	if level == null:
 		level = Level.create("china")  # 菜单和等房主时拿中式关当背景
 	level.game = self
