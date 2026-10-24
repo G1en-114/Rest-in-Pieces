@@ -108,6 +108,15 @@ var finished := false
 var goal_timer := 0.0
 var status_timer := 0.0
 var _in_menu := false
+# 录宣传片（--cam= / --clean）：镜头跟着电脑队伍走，界面全藏起来
+var cine_cam := ""  # fp0 / fp1 = 0 / 1 号的第一人称；chase 身后；front 正前方看脸；side 侧面；orbit 绕着转
+var cine_clean := false
+var cine_pitch := -0.08  # 第一人称低头多少（弧度）
+var cine_yaw_ofs := 0.0  # 镜头朝向在前进方向上再偏多少（弧度）
+var cine_dist := 4.2  # 第三人称镜头离棺材多远
+var cine_height := 2.4  # 第三人称镜头比棺材高多少（太低会被墙挡住）
+var _cine_yaw := INF
+var _cine_eye := Vector3.INF
 var _title_cam := false  # 上一帧是不是开始界面的镜头
 var _waiting := false  # 加入方：还不知道玩哪关（等房主）
 
@@ -218,6 +227,18 @@ func _ready() -> void:
 			menu_page = arg.get_slice("=", 1)
 		elif arg == "--nettest":
 			nettest = true
+		elif arg.begins_with("--cam="):
+			cine_cam = arg.get_slice("=", 1)
+		elif arg == "--clean":
+			cine_clean = true
+		elif arg.begins_with("--campitch="):
+			cine_pitch = float(arg.get_slice("=", 1))
+		elif arg.begins_with("--camyaw2="):
+			cine_yaw_ofs = float(arg.get_slice("=", 1))
+		elif arg.begins_with("--camh="):
+			cine_height = float(arg.get_slice("=", 1))
+		elif arg.begins_with("--camdist="):
+			cine_dist = float(arg.get_slice("=", 1))
 		elif arg.begins_with("--titlecam="):
 			title_cam_angle = float(arg.get_slice("=", 1))
 		elif arg.begins_with("--relay="):
@@ -323,6 +344,9 @@ func _ready() -> void:
 	if mode != "" and not bot and not nettest:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_apply_camera()
+	if cine_cam:
+		cam_fp.cull_mask = Bearer.fp_cull_mask(int(cine_cam.substr(2))) if cine_cam.begins_with("fp") 			else ~(1 << (Level.HINT_LAYER - 1))
+		cam_fp.fov = 80.0
 	if mode == "online":
 		_start_net()
 	if _in_menu:
@@ -366,6 +390,9 @@ func _spawn_team(r: int) -> void:
 		bearers[_me()].set_first_person_owner(_me())
 		if net_role == "client":
 			_make_puppets()
+	elif cine_cam.begins_with("fp"):
+		var i := int(cine_cam.substr(2))
+		bearers[i].set_first_person_owner(i)
 
 
 ## 掉进深渊（或按 R）后在当前检查点重来：棺材放在地上，要自己弯腰捡起来
@@ -605,7 +632,7 @@ func _on_delivered() -> void:
 	if _room_test >= 0:
 		print("ROOM_PASS %d -> goal t=%.1f" % [_room_test, sim_time])
 	if levelbot or _room_test >= 0:
-		quit_at = sim_time + 0.5
+		quit_at = sim_time + (4.0 if cine_cam else 0.5)  # 录宣传片时让结算面板多停一会
 
 
 func _show_result(res: Dictionary, improved: bool) -> void:
@@ -887,7 +914,7 @@ func say(text: String, seconds := 2.5) -> void:
 	if _peer_present():
 		_net_say.rpc(text, seconds)
 	if bot or solotest or nettest:
-		print("SAY ", text.replace("\n", " "))
+		print("SAY t=%.2f %s" % [sim_time, text.replace("\n", " ")])
 	status.text = text
 	status_timer = seconds
 
@@ -909,7 +936,7 @@ func _apply_camera() -> void:
 	# 分屏时主画面被两块分屏盖住，让它的镜头什么都不画，省一遍渲染
 	# （不能用 disable_3d：那会让主视口里的物体退出 3D 世界，物理直接停掉）
 	cam_fixed.cull_mask = 0 if split else _fixed_mask
-	_crosshair.visible = first_person and not split
+	_crosshair.visible = first_person and not split and not cine_clean
 	var common := "R 回检查点 · F5 本关重来 · Esc 释放鼠标 / 回菜单"
 	if mode == "solo":
 		help.text = "WASD 移动 · 鼠标 看 / 控制手的高度（往下看就弯腰去够）· 左键 / 右键 左右手抓（按住）· 空格 跳\n" \
@@ -923,6 +950,39 @@ func _apply_camera() -> void:
 			+ "V 切换第一人称 / 俯视（俯视视角大家共用）· Q / E 旋转 · " + common + " · F1 退出联机"
 	else:
 		help.text = ""
+
+
+## 录宣传片的镜头。朝向跟着电脑队伍下一个路点的方向慢慢转；
+## 第一人称时人被撞飞，镜头跟着身体一起翻滚
+func _cine_camera(delta: float) -> void:
+	var want := _cine_yaw
+	if _bot_wp < _bot_path.size():
+		var wp: Variant = _bot_path[_bot_wp]
+		var to := Vector3.ZERO
+		if wp is Vector3:
+			to = wp - coffin.global_position
+		elif wp is Dictionary:
+			to = wp.dir
+		to.y = 0
+		if to.length() > 0.3:
+			want = atan2(-to.x, -to.z)
+	if want == INF:
+		want = 0.0
+	_cine_yaw = want if _cine_yaw == INF else lerp_angle(_cine_yaw, want, 1.0 - exp(-delta * 2.5))
+	var yaw := _cine_yaw + cine_yaw_ofs
+	cam_fp.current = true
+	if cine_cam.begins_with("fp"):
+		var b := bearers[int(cine_cam.substr(2))]
+		var view := Basis.from_euler(Vector3(cine_pitch, yaw, 0))
+		if b.stun > 0.0:
+			view = b.global_basis.orthonormalized() * Basis.from_euler(Vector3(cine_pitch, 0, 0))
+		cam_fp.global_transform = Transform3D(view, b.to_global(Vector3(0, FP_EYE_HEIGHT, 0)))
+		return
+	var focus := coffin.global_position
+	var around: float = {chase = 0.0, front = PI, side = PI / 2}.get(cine_cam, sim_time * 0.35)
+	var eye := focus + Basis(Vector3.UP, yaw + around) * Vector3(0, cine_height, cine_dist)
+	_cine_eye = eye if _cine_eye == Vector3.INF else _cine_eye.lerp(eye, 1.0 - exp(-delta * 4.0))
+	cam_fp.look_at_from_position(_cine_eye, focus + Vector3.UP * 0.2)
 
 
 ## 开始界面：透视镜头贴近抬棺队伍，从斜前方低一点看过去，人和棺材放在画面右半边，慢慢左右摆
@@ -955,11 +1015,11 @@ func _process(delta: float) -> void:
 	elif _title_cam:
 		cam_fp.cull_mask = Bearer.fp_cull_mask(_me())
 		_apply_camera()
-	if title != _title_cam:
+	if title != _title_cam or (cine_clean and sim_time < 0.1):
 		# 开始界面不显示关卡里飘着的提示字（“抓住把手……”），挽联牌匾这些贴在物体上的字照留
 		for l: Label3D in level.find_children("*", "Label3D", true, false):
 			if l.billboard != BaseMaterial3D.BILLBOARD_DISABLED:
-				l.visible = not title
+				l.visible = not (title or cine_clean)
 	_title_cam = title
 	cam_yaw = lerpf(cam_yaw, cam_yaw_target, 1.0 - exp(-delta * 6.0))
 	var focus := coffin.global_position
@@ -983,7 +1043,7 @@ func _process(delta: float) -> void:
 		if _photofix:
 			level.fix_illusion(_photocam)
 
-	hud.visible = mode != "" and not _waiting
+	hud.visible = mode != "" and not _waiting and not cine_clean
 	hud.text = "体面值 %d    用时 %s    第 %d / %d 间 · %s" % [roundi(score.dignity), Score.clock(score.elapsed),
 		room + 1, level.rooms.size(), level.rooms[room].name]
 	if mode == "online" and _connected() and not multiplayer.get_peers().is_empty():
@@ -991,7 +1051,9 @@ func _process(delta: float) -> void:
 		hud.text += "    延迟 %d ms · 丢包 %d%%" % [q.x, q.y]
 	hud.add_theme_color_override("font_color", Color(1, 0.35, 0.3) if score.dignity < 0.0 else Color.WHITE)
 	status_timer -= delta
-	status.modulate.a = clampf(status_timer, 0.0, 1.0)
+	status.modulate.a = 0.0 if cine_clean else clampf(status_timer, 0.0, 1.0)
+	if cine_cam:
+		_cine_camera(delta)
 
 	if quit_at >= 0.0 and sim_time > quit_at:
 		quit_at = -1.0

@@ -22,3 +22,7 @@ common/physics_ticks_per_second=120
 [rendering]
 
 anti_aliasing/quality/msaa_3d=2
+
+[editor]
+
+movie_writer/mjpeg_quality=0.95
