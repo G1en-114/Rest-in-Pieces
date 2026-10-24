@@ -48,7 +48,7 @@ const FP_EYE_HEIGHT := 0.8
 const ORTHO_SIZE := 15.0
 const DELIVER_TILT := 25.0  # 送达时棺材倾角要小于这个
 const DELIVER_HOLD := 1.5  # 稳稳停在灵台上这么久算送达
-static var NET_VERSION := "2026-10-21c"  # 联机两边版本不一样就拒绝连接（改了联机协议或关卡就改这个；--netversion= 可以假装别的版本来测）
+static var NET_VERSION := "2026-10-24a"  # 联机两边版本不一样就拒绝连接（改了联机协议或关卡就改这个；--netversion= 可以假装别的版本来测）
 const VIEWFINDER_FOV := 50.0  # 举起相机时镜头拉近一点
 ## 天空、雾、太阳的默认值（中式关的黄昏），关卡的 env() 可以覆盖其中任意几项
 const ENV_DEFAULT := {
@@ -59,9 +59,16 @@ const ENV_DEFAULT := {
 	sun_rot = Vector3(-40, -35, 0), sun_color = Color(1.0, 0.86, 0.7), sun_energy = 1.25,
 }
 
+
 static var mode := ""  # "solo" | "duo" | "online"，重来时保留
 static var net_role := ""  # 联机时："host" | "client"
-static var join_ip := "127.0.0.1"
+static var join_ip := "127.0.0.1"  # 加入方输入的：4 位房间号（走中转服务器）或者房主 IP
+static var room_code := ""  # 房主在中转服务器上拿到的房间号；"" = 还没拿到 / 服务器连不上
+static var _room_token := ""
+static var _relay_udp: PacketPeerUDP  # 正在问中转服务器（房主申请房间号 / 加入方查房间在不在）
+static var _relay_query := ""
+static var _relay_tries := 0
+static var _relay_next := 0.0
 static var menu_note := ""  # 回到选择界面时顺便提示一句（比如断线了）
 static var level_id := ""  # 正在玩的关卡；加入方是 "" 时表示还在等房主告诉他玩哪关
 static var start_room := 0
@@ -208,6 +215,11 @@ func _ready() -> void:
 			menu_page = arg.get_slice("=", 1)
 		elif arg == "--nettest":
 			nettest = true
+		elif arg.begins_with("--relay="):
+			var addr := arg.get_slice("=", 1)
+			NetSync.relay_host = addr.get_slice(":", 0)
+			if addr.contains(":"):
+				NetSync.relay_port = int(addr.get_slice(":", 1))
 		elif arg.begins_with("--netversion="):
 			NET_VERSION = arg.get_slice("=", 1)
 		elif arg.begins_with("--camyaw="):
@@ -914,6 +926,7 @@ func _place_fp_camera(cam: Camera3D, b: Bearer, yaw: float, pitch: float) -> voi
 
 
 func _process(delta: float) -> void:
+	_poll_relay()
 	if net_role == "client" and not _waiting:
 		_sync.apply(_sync_bodies())
 		level.tick(_sync.render_time())
@@ -1007,30 +1020,123 @@ func _start_net() -> void:
 		var err: Error
 		if net_role == "host":
 			err = peer.create_server(NetSync.PORT, 1)
+		elif NetSync.is_room_code(join_ip):
+			err = OK
+			peer = null  # 先问服务器房间在不在，在了再连（_on_relay_reply）
+			_relay_ask("CHECK " + join_ip)
 		else:
 			err = peer.create_client(join_ip, NetSync.PORT)
 		if err != OK:
 			_leave_online("端口 %d 被占用了（是不是已经开着一个房主窗口？）" % NetSync.PORT if net_role == "host"
 				else "无法连接 %s（错误 %d）" % [join_ip, err])
 			return
-		multiplayer.multiplayer_peer = peer
+		if peer:
+			multiplayer.multiplayer_peer = peer
+		if net_role == "host":
+			room_code = ""
+			_relay_ask("REG")
 	# multiplayer 跨场景重载一直存在；连的是本节点的方法，节点释放时会自动断开
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	multiplayer.connected_to_server.connect(_on_connected)
 	multiplayer.connection_failed.connect(_leave_online.bind(
+		"进不去房间 %s：房主可能刚退出，或者网络不通" % join_ip if NetSync.is_room_code(join_ip) else
 		"连不上 %s。确认房主已经建好房间、两台电脑在同一个局域网（或都开着 Radmin VPN），并且防火墙放行了 Godot" % join_ip))
 	multiplayer.server_disconnected.connect(_leave_online.bind("和房主断开了连接"))
 	if net_role == "host":
-		_wait_note = "房间建好了，等队友加入……\n让队友按 4，输入你的 IP：%s" % _local_ips()
+		_wait_note = _host_note()
 		if multiplayer.get_peers().is_empty():
 			say(_wait_note, 9999.0)
 		else:
 			_peer_joined_at = 0.0  # 重来或换关，队友还在
 	elif _waiting:
-		_menu.show_text("联机", ("连上了，等房主选关……" if _connected() else "正在连接 %s ……" % join_ip))
+		_menu.show_text("联机", "连上了，等房主选关……" if _connected() else
+			("正在进入房间 %s ……" if NetSync.is_room_code(join_ip) else "正在连接 %s ……") % join_ip)
 	elif _connected():
 		_peer_joined_at = 0.0
+
+
+## 房主等人时屏幕上那段话
+func _host_note() -> String:
+	var lan := "同一局域网 / Radmin 也可以输入你的 IP：\n" + _local_ips()
+	if room_code:
+		return "房间建好了！房间号：%s\n让队友按 4，输入这个房间号\n\n%s" % [room_code, lan]
+	if _relay_udp:
+		return "正在向联机服务器申请房间号……\n\n" + lan
+	return "联机服务器连不上，只能用 IP 联机。\n让队友按 4，" + lan.trim_prefix("同一局域网 / Radmin 也可以")
+
+
+## 开始问中转服务器一句话，答复在 _poll_relay 里收
+func _relay_ask(query: String) -> void:
+	_relay_udp = PacketPeerUDP.new()
+	_relay_udp.connect_to_host(NetSync.relay_host, NetSync.relay_port)
+	_relay_query = query
+	_relay_tries = 0
+	_relay_next = 0.0
+
+
+## 每帧：收中转服务器的答复；房主每 3 秒发心跳（顺便保持路由器的 NAT 映射），
+## 加入方没连上之前不停报房间号（服务器认得他的地址以后才会转发他的 ENet 包）
+func _poll_relay() -> void:
+	var now := NetSync.now()
+	if _relay_udp:
+		while _relay_udp.get_available_packet_count() > 0:
+			var reply := NetSync.relay_reply(_relay_udp.get_packet())
+			if not reply.is_empty():
+				_relay_udp.close()
+				_relay_udp = null
+				_on_relay_reply(reply)
+				return
+		if now >= _relay_next:
+			if _relay_tries >= 8:
+				_relay_udp.close()
+				_relay_udp = null
+				_on_relay_reply(PackedStringArray(["TIMEOUT"]))
+				return
+			_relay_tries += 1
+			_relay_next = now + 0.4
+			_relay_udp.put_packet(NetSync.relay_packet(_relay_query))
+		return
+	var enet := multiplayer.multiplayer_peer as ENetMultiplayerPeer
+	if enet == null or enet.get_connection_status() == MultiplayerPeer.CONNECTION_DISCONNECTED or now < _relay_next:
+		return
+	if room_code:
+		_relay_next = now + 3.0
+		enet.host.socket_send(NetSync.relay_host, NetSync.relay_port + 1,
+			NetSync.relay_packet("HOST %s %s" % [room_code, _room_token]))
+	elif net_role == "client" and NetSync.is_room_code(join_ip) and not _connected():
+		_relay_next = now + 0.3
+		enet.host.socket_send(NetSync.relay_host, NetSync.relay_port, NetSync.relay_packet("JOIN " + join_ip))
+
+
+func _on_relay_reply(reply: PackedStringArray) -> void:
+	match reply[0]:
+		"ROOM":
+			if reply.size() < 3:
+				return
+			room_code = reply[1]
+			_room_token = reply[2]
+			_relay_next = 0.0
+			print("NET room ", room_code)
+		"OK":
+			var peer := ENetMultiplayerPeer.new()
+			var err := peer.create_client(NetSync.relay_host, NetSync.relay_port)
+			if err != OK:
+				_leave_online("无法连接联机服务器（错误 %d）" % err)
+				return
+			multiplayer.multiplayer_peer = peer
+			_relay_next = 0.0
+			_poll_relay()  # 赶在 ENet 的连接请求前面先报房间号
+		"NOROOM":
+			_leave_online("房间 %s 不存在（房主可能已经退出了），核对一下房间号" % join_ip)
+			return
+		_:  # TIMEOUT / FULL
+			if _relay_query != "REG":
+				_leave_online("联机服务器连不上。可以让房主报 IP，用局域网 / Radmin 联机")
+				return
+	if _is_host() and not _link_has_peers():
+		_wait_note = _host_note()
+		say(_wait_note, 9999.0)
 
 
 ## 本机的 IPv4 地址：Radmin VPN 的（26. 开头）排最前面，队友一般用这个
@@ -1106,6 +1212,10 @@ func _leave_online(note: String) -> void:
 	if multiplayer.multiplayer_peer is ENetMultiplayerPeer:
 		multiplayer.multiplayer_peer.close()
 	multiplayer.multiplayer_peer = null
+	if _relay_udp:
+		_relay_udp.close()
+		_relay_udp = null
+	room_code = ""
 	mode = ""
 	net_role = ""
 	level_id = ""

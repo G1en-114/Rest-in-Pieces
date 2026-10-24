@@ -6,6 +6,9 @@ extends RefCounted
 ## 快照格式：每个刚体 7 个数（位置 xyz + 四元数 xyzw），顺序和 main.gd 的 _team_bodies() 一致。
 
 const PORT := 7777
+## 房间号中转服务器（tools/relay.py）：队友连 relay_port，房主往 relay_port + 1 发心跳
+static var relay_host := "47.111.139.53"  # --relay=IP[:端口] 可以换成别的（本机测试：--relay=127.0.0.1:9777）
+static var relay_port := 7777
 const SEND_EVERY := 4  # 物理 120 帧/秒，每 4 帧发一次快照 = 30 次/秒
 const INPUT_EVERY := 2  # 客户端每 2 帧发一次按键 = 60 次/秒
 const INTERP_DELAY := 0.1  # 显示比房主慢 0.1 秒，手里总有前后两个快照可插
@@ -27,6 +30,26 @@ static func pack(bodies: Array[RigidBody3D]) -> PackedFloat32Array:
 			data[i] = v
 			i += 1
 	return data
+
+
+## 加入时输入的是 4 位房间号（走中转服务器），否则当成 IP 直连
+static func is_room_code(s: String) -> bool:
+	return s.length() == 4 and s.is_valid_int()
+
+
+## 中转服务器的控制包
+static func relay_packet(text: String) -> PackedByteArray:
+	var data := PackedByteArray([0xFF])
+	data.append_array(("RIP " + text).to_ascii_buffer())
+	return data
+
+
+## 解析中转服务器的回复，不是控制包就返回空数组
+static func relay_reply(data: PackedByteArray) -> PackedStringArray:
+	var head := relay_packet("")
+	if data.size() < head.size() or data.slice(0, head.size()) != head:
+		return PackedStringArray()
+	return data.slice(head.size()).get_string_from_ascii().split(" ", false)
 
 
 static func now() -> float:

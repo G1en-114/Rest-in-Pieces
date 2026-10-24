@@ -69,10 +69,10 @@ func show_modes(note := "") -> void:
 
 
 func show_ip(ip: String) -> void:
-	_page("加入房间", "输入房主的 IP，按 Enter 加入（Esc 返回）")
+	_page("加入房间", "输入房主屏幕上的 4 位房间号，按 Enter 加入\n同一局域网 / Radmin 也可以直接输入房主的 IP（Esc 返回）")
 	var edit := LineEdit.new()
-	edit.text = ip if ip else Save.last_ip(Main.join_ip)
-	edit.placeholder_text = "房主的 IP"
+	edit.text = ip if ip else Save.last_ip("")
+	edit.placeholder_text = "房间号 或 房主的 IP"
 	edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
 	edit.add_theme_font_size_override("font_size", 30)
 	_box.add_child(edit)
