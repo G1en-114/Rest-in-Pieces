@@ -59,6 +59,7 @@ const ENV_DEFAULT := {
 	sun_rot = Vector3(-40, -35, 0), sun_color = Color(1.0, 0.86, 0.7), sun_energy = 1.25,
 }
 
+static var title_cam_angle := 2.5  # 开始界面镜头绕棺材的方位角（弧度），--titlecam= 可调
 
 static var mode := ""  # "solo" | "duo" | "online"，重来时保留
 static var net_role := ""  # 联机时："host" | "client"
@@ -107,6 +108,7 @@ var finished := false
 var goal_timer := 0.0
 var status_timer := 0.0
 var _in_menu := false
+var _title_cam := false  # 上一帧是不是开始界面的镜头
 var _waiting := false  # 加入方：还不知道玩哪关（等房主）
 
 var _partner_formed := false
@@ -159,6 +161,7 @@ var _photo_thumb: TextureRect
 
 
 func _ready() -> void:
+	get_window().title = "棺不住 · Rest in Pieces"  # 项目名还叫“抬棺”，不然存档目录会换地方
 	var arg_level := ""
 	var arg_room := -1
 	for arg in OS.get_cmdline_user_args():
@@ -215,6 +218,8 @@ func _ready() -> void:
 			menu_page = arg.get_slice("=", 1)
 		elif arg == "--nettest":
 			nettest = true
+		elif arg.begins_with("--titlecam="):
+			title_cam_angle = float(arg.get_slice("=", 1))
 		elif arg.begins_with("--relay="):
 			var addr := arg.get_slice("=", 1)
 			NetSync.relay_host = addr.get_slice(":", 0)
@@ -920,6 +925,17 @@ func _apply_camera() -> void:
 		help.text = ""
 
 
+## 开始界面：透视镜头贴近抬棺队伍，从斜前方低一点看过去，人和棺材放在画面右半边，慢慢左右摆
+func _stage_title_camera() -> void:
+	var c := coffin.global_position
+	var a := title_cam_angle + sin(NetSync.now() * 0.15) * 0.18
+	var eye := c + Vector3(cos(a), 0.0, sin(a)) * 3.4 + Vector3.UP * 0.55
+	var right := (c - eye).cross(Vector3.UP).normalized()
+	cam_fp.current = true
+	cam_fp.cull_mask = ~(1 << (Level.HINT_LAYER - 1))
+	cam_fp.look_at_from_position(eye, c + Vector3.UP * 0.15 - right * 1.25)
+
+
 func _place_fp_camera(cam: Camera3D, b: Bearer, yaw: float, pitch: float) -> void:
 	var view := Basis.from_euler(Vector3(pitch, yaw, 0))
 	cam.global_transform = Transform3D(view, b.to_global(Vector3(0, FP_EYE_HEIGHT, 0)) + Basis(Vector3.UP, yaw) * Vector3(0, 0, -0.12))
@@ -933,6 +949,18 @@ func _process(delta: float) -> void:
 		level.traps_tick(_sync.render_time())
 		_max_step = maxf(_max_step, coffin.global_position.distance_to(_last_coffin_pos))
 		_last_coffin_pos = coffin.global_position
+	var title := _menu.showing_title()
+	if title:
+		_stage_title_camera()
+	elif _title_cam:
+		cam_fp.cull_mask = Bearer.fp_cull_mask(_me())
+		_apply_camera()
+	if title != _title_cam:
+		# 开始界面不显示关卡里飘着的提示字（“抓住把手……”），挽联牌匾这些贴在物体上的字照留
+		for l: Label3D in level.find_children("*", "Label3D", true, false):
+			if l.billboard != BaseMaterial3D.BILLBOARD_DISABLED:
+				l.visible = not title
+	_title_cam = title
 	cam_yaw = lerpf(cam_yaw, cam_yaw_target, 1.0 - exp(-delta * 6.0))
 	var focus := coffin.global_position
 	for b in bearers:

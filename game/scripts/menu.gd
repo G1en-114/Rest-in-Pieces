@@ -14,6 +14,12 @@ var _keys := {}  # 当前页面的快捷键 → Callable
 var _back := Callable()  # 当前页面按 Esc 做什么
 var _mode := ""
 var _role := ""
+var _title: Control  # 开始界面：左边手写的游戏名和一列白字按钮，右边是近景的抬棺队伍
+var _title_chars: Array[Label] = []  # 游戏名一个字一个 Label，各歪各的、各晃各的
+var _title_buttons: VBoxContainer
+var _title_note: Label
+var _title_t := 0.0
+const HAND_FONT := preload("res://assets/fonts/ZCOOLKuaiLe-Regular.ttf")  # 站酷快乐体（OFL）
 
 
 func _ready() -> void:
@@ -36,7 +42,27 @@ func _ready() -> void:
 	_box.add_theme_constant_override("separation", 10)
 	_box.custom_minimum_size = Vector2(620, 0)
 	_panel.add_child(_box)
+	_build_title()
 	visible = false
+
+
+func _process(delta: float) -> void:
+	if not showing_title():
+		return
+	# 字各自慢慢晃，像没摆正的招牌
+	_title_t += delta
+	for i in _title_chars.size():
+		var l := _title_chars[i]
+		l.pivot_offset = l.size / 2
+		l.rotation = l.get_meta("tilt") + sin(_title_t * 1.3 + i * 1.9) * 0.03
+		l.position.y = sin(_title_t * 1.7 + i * 2.3) * 4.0
+	for b: Button in _title_buttons.get_children():
+		var on := b.has_focus() or b.is_hovered()
+		var s := lerpf(b.scale.x, 1.1 if on else 1.0, 1.0 - exp(-delta * 14.0))
+		b.pivot_offset = Vector2(0, b.size.y / 2)
+		b.scale = Vector2(s, s)
+		b.rotation = lerpf(b.rotation, -0.03 if on else 0.0, 1.0 - exp(-delta * 14.0))
+
 
 
 func _unhandled_key_input(event: InputEvent) -> void:
@@ -56,16 +82,30 @@ func _unhandled_key_input(event: InputEvent) -> void:
 
 # ---------- 各个页面 ----------
 
+# ---------- 各个页面 ----------
+
+func showing_title() -> bool:
+	return visible and _title.visible
+
+
+## 开始界面兼选模式
 func show_modes(note := "") -> void:
-	_page("抬　棺", "")
-	_button("1", "单人（电脑队友帮你抬）", KEY_1, func(): _pick_mode("solo", ""))
-	_button("2", "双人（两人共用键盘）", KEY_2, func(): _pick_mode("duo", ""))
-	_button("3", "联机：建房间（你当房主）", KEY_3, func(): _pick_mode("online", "host"))
-	_button("4", "联机：加入房间", KEY_4, show_ip.bind(""))
-	if note:
-		_text(note, 20, Color(1, 0.7, 0.5))
+	_page("", "")
+	_panel.visible = false
+	_title.visible = true
+	for c in _title_buttons.get_children():
+		_title_buttons.remove_child(c)
+		c.queue_free()
+	_title_button("1", "一个人抬", "电脑队友帮你", KEY_1, func(): _pick_mode("solo", ""))
+	_title_button("2", "两个人抬", "共用一个键盘", KEY_2, func(): _pick_mode("duo", ""))
+	_title_button("3", "建房间", "联机，你当房主", KEY_3, func(): _pick_mode("online", "host"))
+	_title_button("4", "加入房间", "输入房间号", KEY_4, show_ip.bind(""))
+	_title_button("Q", "退出", "", KEY_Q, get_tree().quit)
+	_title_note.text = note
+	_title_note.visible = note != ""
 	_back = Callable()
-	_focus_first()
+	_title_buttons.get_child(0).grab_focus.call_deferred()
+
 
 
 func show_ip(ip: String) -> void:
@@ -188,12 +228,117 @@ func _mode_name() -> String:
 	return {solo = "单人", duo = "双人"}.get(_mode, "")
 
 
+func _build_title() -> void:
+	_title = Control.new()
+	_title.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_title.visible = false
+	add_child(_title)
+	# 只在左边垫一层很淡的影子，白字压在亮背景上也看得清
+	var grad := Gradient.new()
+	grad.set_color(0, Color(0.05, 0.04, 0.08, 0.6))
+	grad.set_color(1, Color(0.05, 0.04, 0.08, 0.0))
+	grad.add_point(0.55, Color(0.05, 0.04, 0.08, 0.45))
+	var tex := GradientTexture2D.new()
+	tex.gradient = grad
+	tex.fill_to = Vector2(0.72, 0.0)
+	var shade := TextureRect.new()
+	shade.texture = tex
+	shade.stretch_mode = TextureRect.STRETCH_SCALE
+	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_title.add_child(shade)
+
+	var col := VBoxContainer.new()
+	col.position = Vector2(110, 70)
+	col.add_theme_constant_override("separation", 0)
+	_title.add_child(col)
+	# 游戏名：每个字单独一个 Label，套在普通 Control 里，晃的时候不会被容器摆回去
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", -6)
+	col.add_child(row)
+	var tilts := [-0.07, 0.05, -0.03]
+	var sizes := [176, 150, 164]
+	for i in 3:
+		var holder := Control.new()
+		holder.custom_minimum_size = Vector2(sizes[i] * 0.98, 200)
+		holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(holder)
+		var l := _title_label("棺不住"[i], sizes[i], holder)
+		l.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		l.set_meta("tilt", tilts[i])
+		_title_chars.append(l)
+	var en := _title_label("Rest in Pieces", 56, col)
+	en.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	en.rotation = -0.03
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, 46)
+	col.add_child(gap)
+	_title_buttons = VBoxContainer.new()
+	_title_buttons.add_theme_constant_override("separation", 4)
+	col.add_child(_title_buttons)
+	_title_note = _title_label("", 24, col, Color(1.0, 0.8, 0.6))
+	_title_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_title_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_title_note.custom_minimum_size = Vector2(620, 0)
+	var foot := _title_label("2–4 人物理派对游戏 · 中国 · 埃及 · 墨西哥", 22, _title, Color(1, 1, 1, 0.75))
+	foot.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+	foot.position = Vector2(112, foot.position.y - 56)
+
+
+func _title_label(s: String, size: int, parent: Control, color := Color.WHITE) -> Label:
+	var l := Label.new()
+	l.text = s
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	l.add_theme_font_override("font", HAND_FONT)
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", color)
+	l.add_theme_color_override("font_shadow_color", Color(0.08, 0.05, 0.1, 0.55))
+	l.add_theme_constant_override("shadow_offset_x", maxi(2, size / 30))
+	l.add_theme_constant_override("shadow_offset_y", maxi(3, size / 22))
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(l)
+	return l
+
+
+## 开始界面上的白字按钮：没有底板，选中时变黄、放大一点、歪一下
+func _title_button(hint: String, text: String, sub: String, key: Key, action: Callable) -> void:
+	var b := Button.new()
+	b.flat = true
+	b.text = "%s  %s" % [hint, text]
+	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	b.add_theme_font_override("font", HAND_FONT)
+	b.add_theme_font_size_override("font_size", 44)
+	for state in ["font_color", "font_pressed_color"]:
+		b.add_theme_color_override(state, Color.WHITE)
+	for state in ["font_hover_color", "font_focus_color", "font_hover_pressed_color"]:
+		b.add_theme_color_override(state, Color(1.0, 0.86, 0.35))
+	b.add_theme_color_override("font_outline_color", Color(0.08, 0.05, 0.1, 0.5))
+	b.add_theme_constant_override("outline_size", 6)
+	for style in ["normal", "hover", "pressed", "focus", "hover_pressed"]:
+		b.add_theme_stylebox_override(style, StyleBoxEmpty.new())
+	b.pressed.connect(action)
+	b.mouse_entered.connect(b.grab_focus)
+	_title_buttons.add_child(b)
+	if sub:
+		var s := _title_label(sub, 22, b, Color(1, 1, 1, 0.7))
+		s.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		s.set_anchors_and_offsets_preset(Control.PRESET_CENTER_LEFT)
+		s.position.x = b.get_theme_font("font").get_string_size(b.text, HORIZONTAL_ALIGNMENT_LEFT, -1, 44).x + 22
+	_keys[key] = action
+
+
 func _page(title: String, subtitle: String) -> void:
 	visible = true
+	_panel.visible = true
+	_title.visible = false
 	_keys.clear()
 	for c in _box.get_children():
 		_box.remove_child(c)
 		c.queue_free()
+	if not title:
+		return
 	var t := _text(title, 52, Props.GOLD)
 	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	if subtitle:
