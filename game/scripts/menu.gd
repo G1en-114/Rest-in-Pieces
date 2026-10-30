@@ -6,6 +6,7 @@ extends Control
 
 signal start(mode: String, role: String, level_id: String, room: int, resume: bool)
 signal join(ip: String)
+signal customize
 signal result_key(key: String)  # 结算面板上按了 "R" / "N" / "M"
 
 var _panel: PanelContainer
@@ -68,6 +69,9 @@ func _process(delta: float) -> void:
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not visible or not (event is InputEventKey and event.pressed and not event.echo):
 		return
+	var workshop := get_tree().get_first_node_in_group("character_workshop") as Control
+	if workshop != null and workshop.visible:
+		return
 	var key: Key = event.physical_keycode
 	# 小键盘数字当成主键盘数字
 	if key >= KEY_KP_0 and key <= KEY_KP_9:
@@ -100,6 +104,7 @@ func show_modes(note := "") -> void:
 	_title_button("2", "两个人抬", "共用一个键盘", KEY_2, func(): _pick_mode("duo", ""))
 	_title_button("3", "建房间", "联机，你当房主", KEY_3, func(): _pick_mode("online", "host"))
 	_title_button("4", "加入房间", "输入房间号", KEY_4, show_ip.bind(""))
+	_title_button("C", "自定义角色", "照片变角色", KEY_C, customize.emit)
 	_title_button("Q", "退出", "", KEY_Q, get_tree().quit)
 	_title_note.text = note
 	_title_note.visible = note != ""

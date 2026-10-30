@@ -31,7 +31,8 @@ tr { break-inside: avoid; }
 th { background: #2a2230; color: #fff; font-weight: normal; text-align: left; }
 th, td { padding: 5px 9px; border: 1px solid #ddd3e0; vertical-align: top; }
 tr:nth-child(even) td { background: #faf6fb; }
-img { width: 100%%; border-radius: 8px; margin: 4px 0 6px; }
+img { width: 100%%; max-height: 82mm; object-fit: contain; border-radius: 8px; margin: 4px 0 6px; break-inside: avoid; }
+p:has(+ p > img) { break-after: avoid; }
 code { font-family: Consolas, monospace; font-size: 9.5pt; background: #f2edf4; padding: 1px 4px;
        border-radius: 3px; }
 """ % FONT

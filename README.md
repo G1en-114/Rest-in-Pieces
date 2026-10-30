@@ -1,9 +1,10 @@
 # 棺不住 · Rest in Pieces（黑客松项目）
 
-2–4 人物理派对游戏：一群站不稳的抬棺人，把棺材抬过一座不讲物理定律的灵堂。角色由 AHOLO Lux3D 生成。
+支持单人、本地双人和双人联机的物理派对游戏：一群站不稳的抬棺人，把棺材抬过一座不讲物理定律的灵堂。抬棺人和部分主题道具由 AHOLO Lux3D 生成。
 
 - 设计文档：`docs/设计文档.md`（在线版见文档顶部链接）
 - 角色风格与提示词：`docs/角色风格.md`
+- Lux3D 的实际用途、接入流程与待做功能：[Lux3D 接入说明](docs/Lux3D接入说明.md)
 
 ## 运行
 
@@ -33,9 +34,34 @@
 | `tools/preview_glb.py` | 用 Blender 渲染模型四视图 |
 | `generated/` | API 生成的原始结果（不进 git） |
 
-API key 放在根目录 `.env`（`AHOLO_API_KEY=...`），**不要提交**。
+API key 放在根目录 `.env`（`AHOLO_API_KEY=...`），**不要提交**。`tools/aholo.py` 也支持系统环境变量，优先于 `.env`；查看 `--help` 无需密钥。`wait` 默认最多等待生成完成 900 秒，可用 `--timeout` 调整，超时后用原 taskId 继续查询，无需再次生成。
+
+## 照片自定义角色
+
+主菜单点 **C「自定义角色」**：选择玩家一、玩家二或逝者 → 选择 PNG / JPEG 全身照片 → 输入自己的 AHOLO API Key → 选择密钥所属的国内 / 国际区域 → 点「生成并自动绑骨」。游戏直接调用平台，不需要 Python 或额外生成服务器。生成和绑骨会使用玩家的平台额度；等待期间可以返回菜单。
+
+密钥仅保留在本次游戏运行的内存中，不保存、不发送给队友。照片用于平台生成，不在游戏缓存中保存。成功后的模型保存在 `user://characters/`，任务号和阶段保存在 `user://character_tasks.cfg`；重启后重新输入密钥即可继续查询。请求已发出但没收到任务号时，应先检查平台任务记录并填入实际任务号，避免重复创建。停止本地等待不会取消远端任务。
+
+也可以导入已有的、资源全部内嵌的 GLB 人形模型（≤32 MiB）；需要兼容的人形骨架，失败保留原外观。工作台可恢复默认外观。联机时每台电脑的「玩家一」作为自己的角色，逝者使用房主的选择；只传模型数据，离开房间恢复本机外观。
+
+作品介绍文案见 [作品描述](docs/提交/作品描述.md)。真实平台的照片生成需使用有效密钥和额度；自动测试使用本地模拟服务。
 
 ## 自动测试
+
+Lux3D 工具的离线回归测试（仅连接本地测试 HTTP 服务）：
+
+```
+python -m unittest discover -s tools/tests -v
+```
+
+原生角色适配及工作台状态测试：
+
+```
+E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless --path game --script res://tests/test_character_models.gd
+E:/Godot/Godot_v4.7.2-stable_win64_console.exe --headless --path game --script res://tests/test_character_workshop.gd
+```
+
+游戏测试：
 
 ```
 cd game

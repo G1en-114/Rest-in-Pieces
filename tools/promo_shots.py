@@ -47,6 +47,16 @@ SHOTS = {
     "m_market_orbit": (10, ["--bot", "--level=mexico", "--room=2", "--cam=orbit", "--camdist=6", "--camh=3"]),
     "c_hall_fp": (10, ["--bot", "--level=china", "--room=1", "--cam=fp0"]),
     "online_host": (6, ["--host", "--level=china", "--room=1", "--keepui"]),  # 联机：屏幕上显示房间号
+    # 自定义角色短片：先在工作台把生成的模型应用到玩家一 / 玩家二 / 逝者，再录这些
+    "x_title": (6, []),
+    "x_lift_front": (7, ["--bot", "--level=china", "--room=0", "--cam=front"]),
+    "x_orbit": (9, ["--bot", "--level=mexico", "--room=0", "--cam=orbit", "--camdist=4"]),
+    "x_push_fp": (9, ["--bot", "--nowait", "--level=china", "--room=2", "--cam=fp0", "--botdelay=0.8"]),
+    "x_push_side": (9, ["--bot", "--nowait", "--level=china", "--room=2", "--cam=side", "--botdelay=0.8",
+                        "--camh=4", "--camdist=5"]),
+    "x_boulder_front": (12, ["--bot", "--nowait", "--level=egypt", "--room=4", "--cam=front"]),
+    "x_rockets_chase": (12, ["--bot", "--nowait", "--level=mexico", "--room=5", "--cam=chase"]),
+    "x_bridge_fall_fp": (9, ["--bot", "--noalign", "--level=china", "--room=5", "--cam=fp0"]),
 }
 
 

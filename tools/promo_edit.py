@@ -3,9 +3,11 @@
 
   python tools/promo_edit.py            # 完整输出
   python tools/promo_edit.py --preview  # 960x540、只出每段的缩略图，检查节奏和字幕位置
+  python tools/promo_edit.py --cut=promo_cut_chars  # 换一张剪辑表（自定义角色短片），输出名取表里的 NAME
 
 剪辑表在 promo_cut.py 里（CUT），这里只管怎么画。
 """
+import importlib
 import subprocess
 import sys
 import wave
@@ -16,7 +18,9 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from promo_cut import CUT  # noqa: E402
+_cut = importlib.import_module(next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--cut=")), "promo_cut"))
+CUT = _cut.CUT
+NAME = getattr(_cut, "NAME", "棺不住_宣传片")
 
 ROOT = Path(__file__).resolve().parent.parent
 RAW = ROOT / "promo" / "raw"
@@ -132,7 +136,7 @@ def read_clip(name: str, start: float, dur: float, speed: float, w: int, h: int)
     """从录好的 avi 里按速度读出 dur 秒（输出时长）的帧"""
     src_dur = dur * speed
     vf = f"setpts=PTS/{speed},fps={FPS},scale={w}:{h}"
-    cmd = ["ffmpeg", "-v", "error", "-ss", f"{start:.3f}", "-t", f"{src_dur:.3f}", "-i", str(RAW / f"{name}.avi"),
+    cmd = ["ffmpeg", "-v", "error", "-ss", f"{start:.3f}", "-t", f"{src_dur:.3f}", "-i", str(RAW / (name if "." in name else f"{name}.avi")),
            "-vf", vf, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
     n = int(round(dur * FPS))
@@ -223,7 +227,7 @@ def load_wav(path: Path) -> np.ndarray:
 
 def mix_audio(total: float, path: Path) -> None:
     out = np.zeros((int(total * SR) + SR, 2), np.float32)
-    bgm = load_wav(AUDIO / "bgm.wav") * 0.8
+    bgm = load_wav(AUDIO / getattr(_cut, "BGM", "bgm.wav")) * 0.8
     n = min(len(bgm), len(out))
     out[:n] += bgm[:n]
     t0 = 0.0
@@ -258,7 +262,7 @@ def render(preview: bool) -> None:
     total = sum(s["dur"] for s in CUT)
     wav = OUT / "mix.wav"
     mix_audio(total, wav)
-    dst = OUT / ("preview.mp4" if preview else "棺不住_宣传片.mp4")
+    dst = OUT / ("preview.mp4" if preview else f"{NAME}.mp4")
     enc = subprocess.Popen(
         ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(FPS),
          "-i", "-", "-i", str(wav), "-c:v", "libx264", "-preset", "veryfast" if preview else "medium", "-threads", "2",

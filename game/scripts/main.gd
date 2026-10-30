@@ -48,7 +48,7 @@ const FP_EYE_HEIGHT := 0.8
 const ORTHO_SIZE := 15.0
 const DELIVER_TILT := 25.0  # 送达时棺材倾角要小于这个
 const DELIVER_HOLD := 1.5  # 稳稳停在灵台上这么久算送达
-static var NET_VERSION := "2026-10-24a"  # 联机两边版本不一样就拒绝连接（改了联机协议或关卡就改这个；--netversion= 可以假装别的版本来测）
+static var NET_VERSION := "2026-10-26a"  # 联机两边版本不一样就拒绝连接（改了联机协议或关卡就改这个；--netversion= 可以假装别的版本来测）
 const VIEWFINDER_FOV := 50.0  # 举起相机时镜头拉近一点
 ## 天空、雾、太阳的默认值（中式关的黄昏），关卡的 env() 可以覆盖其中任意几项
 const ENV_DEFAULT := {
@@ -93,6 +93,7 @@ var status: Label
 var help: Label
 var _crosshair: Label
 var _menu: Menu
+var _workshop: CharacterWorkshop
 
 var first_person := false
 var cam_yaw := 45.0
@@ -356,6 +357,9 @@ func _ready() -> void:
 			_menu.show_rooms(menu_page.get_slice(":", 1))
 		elif menu_page == "levels":
 			_menu.show_levels(menu_mode if menu_mode else "solo", menu_role)
+		elif menu_page == "characters":
+			_menu.show_modes(menu_note)
+			_open_workshop.call_deferred()
 		else:
 			_menu.show_modes(menu_note)
 		menu_page = ""
@@ -531,6 +535,7 @@ func _flash_rect(r: ColorRect) -> void:
 
 func _spawn_bearer(pos: Vector3, yaw: float) -> void:
 	var b := Bearer.new()
+	b.character_slot = "player1" if bearers.is_empty() else "player2"
 	b.position = pos
 	b.rotation.y = yaw
 	add_child(b)
@@ -646,6 +651,8 @@ func _show_result(res: Dictionary, improved: bool) -> void:
 # ---------- 输入 ----------
 
 func _unhandled_input(event: InputEvent) -> void:
+	if is_instance_valid(_workshop) and _workshop.visible:
+		return
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		look_yaw = wrapf(look_yaw - event.relative.x * MOUSE_SENS, -PI, PI)
 		look_pitch = clampf(look_pitch - event.relative.y * MOUSE_SENS, -1.5, 1.2)
@@ -1274,6 +1281,7 @@ func _net_hello(version: String) -> void:
 				multiplayer.multiplayer_peer.disconnect_peer(id))
 		say("队友的游戏版本和你不一样，已拒绝（%s）" % version, 6.0)
 		return
+	CharacterSync.accept_peer(id)
 	_goto(level_id, room, score.snapshot())
 
 
@@ -1299,6 +1307,7 @@ func _on_connected() -> void:
 
 ## 退出联机（单机时就是回到选模式），note 会显示在选择界面上
 func _leave_online(note: String) -> void:
+	CharacterSync.reset()
 	if multiplayer.multiplayer_peer is ENetMultiplayerPeer:
 		multiplayer.multiplayer_peer.close()
 	multiplayer.multiplayer_peer = null
@@ -1526,6 +1535,9 @@ func _duotest_script() -> void:
 	if _log_timer <= 0.0:
 		_log_timer = 0.5
 		for b in bearers:
+			# 双手延迟加入场景树，首帧不能读取它们的世界坐标。
+			if b.hands.any(func(h): return not h.is_inside_tree()):
+				continue
 			print("DUO t=%.1f pos=%s vel=%s grab=%s held=%s move=%s hands=%s" % [t, b.global_position.snapped(Vector3.ONE * 0.01),
 				b.linear_velocity.snapped(Vector3.ONE * 0.01), b.want_grab, b.held.map(func(x): return x != null), b.move_dir,
 				b.hands.map(func(h): return h.global_position.snapped(Vector3.ONE * 0.01))])
@@ -1548,7 +1560,7 @@ func _solotest_script(p: Bearer) -> void:
 	elif t > 13.5 and t < 16.0 and not first_person:
 		look_yaw = wrapf(look_yaw + 1.0 * get_physics_process_delta_time(), -PI, PI)  # 原地转身，看棺材会不会跟着转
 	_log_timer -= get_physics_process_delta_time()
-	if _log_timer <= 0.0:
+	if _log_timer <= 0.0 and p.hands.all(func(h): return h.is_inside_tree()):
 		_log_timer = 0.5
 		var partner := bearers[1]
 		print("    coffin_yaw=%.0f" % rad_to_deg(atan2(coffin.global_basis.x.z, coffin.global_basis.x.x)))
@@ -1683,8 +1695,32 @@ func _build_hud() -> void:
 	_menu.start.connect(_on_menu_start)
 	_menu.join.connect(_on_menu_join)
 	_menu.result_key.connect(_command)
+	_setup_workshop()
 	if mode != "" and not _waiting:
 		say("第 %d 间 · %s\n抓住棺材把手，一路抬到灵台" % [room + 1, level.rooms[room].name], 5.0)
+
+
+func _setup_workshop() -> void:
+	var overlay := get_tree().root.get_node_or_null("CharacterWorkshopLayer") as CanvasLayer
+	if overlay == null:
+		overlay = CanvasLayer.new()
+		overlay.name = "CharacterWorkshopLayer"
+		overlay.layer = 100
+		get_tree().root.add_child.call_deferred(overlay)
+		_workshop = CharacterWorkshop.new()
+		overlay.add_child(_workshop)
+	else:
+		_workshop = overlay.get_child(0) as CharacterWorkshop
+	_workshop.theme = (_menu.get_parent() as Control).theme
+	_menu.customize.connect(_open_workshop)
+	_workshop.closed.connect(func() -> void:
+		if _in_menu:
+			_menu.show_modes())
+
+
+func _open_workshop() -> void:
+	_menu.close()
+	_workshop.open()
 
 
 ## 双人分屏：左右两块 SubViewport，共用同一个 3D 世界，各放一个第一人称镜头

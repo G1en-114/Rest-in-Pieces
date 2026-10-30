@@ -1,10 +1,12 @@
 """宣传片的配乐和音效，全部用 numpy 现合成（不用任何外部素材，没有版权问题）。
 
   python tools/promo_audio.py   # 生成 promo/audio/bgm.wav 和 promo/audio/sfx_*.wav
+  python tools/promo_audio.py --bars=50 --out=bgm_long.wav  # 只出一首更长的配乐（合辑版用）
 
 配乐结构：先是 INTRO 秒庄重的葬礼管风琴，然后唱片一刮，128 BPM 的欢快鼓点和木琴旋律进来，
 最后一小节收在一个大和弦上。
 """
+import sys
 import wave
 from pathlib import Path
 
@@ -71,8 +73,8 @@ def hat(open_=False) -> np.ndarray:
     return x * env(n, 0.001, 0.06 if open_ else 0.015) * 0.35
 
 
-def bgm() -> np.ndarray:
-    total = INTRO + BARS * BAR + 3.0
+def bgm(bars: int = BARS) -> np.ndarray:
+    total = INTRO + bars * BAR + 3.0
     buf = np.zeros(int(total * SR))
     # 管风琴：Dm - A - Dm（庄重、慢）
     for i, chord in enumerate([[50, 53, 57, 62], [49, 52, 57, 61], [50, 53, 57, 62]]):
@@ -88,10 +90,10 @@ def bgm() -> np.ndarray:
             (4, 72), (4.5, 74), (5, 76), (6, 79), (6.5, 81), (7, 84)]
     hook2 = [(0, 81), (0.5, 79), (1, 76), (1.5, 79), (2, 81), (3, 84), (3.5, 81),
              (4, 79), (4.5, 76), (5, 74), (5.5, 76), (6, 72), (7, 72)]
-    for bar in range(BARS):
+    for bar in range(bars):
         b0 = t0 + bar * BAR
         chord = prog[bar % 4]
-        last = bar == BARS - 1
+        last = bar == bars - 1
         for beat in range(4):
             bt = b0 + beat * BEAT
             if last and beat > 0:
@@ -120,7 +122,7 @@ def bgm() -> np.ndarray:
             for k in range(8):
                 add(buf, clap(), b0 + 2 * BEAT + k * BEAT / 4, 0.25 + k * 0.04)
     # 收尾大和弦
-    end = t0 + (BARS - 1) * BAR
+    end = t0 + (bars - 1) * BAR
     for n in (48, 60, 64, 67, 72, 76):
         x = tone(note(n), 2.8, "marimba") * env(int(2.8 * SR), 0.003, 1.0)
         add(buf, x, end, 0.12)
@@ -182,6 +184,11 @@ def save(path: Path, x: np.ndarray) -> None:
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
+    opts = dict(a[2:].split("=", 1) for a in sys.argv[1:] if a.startswith("--") and "=" in a)
+    if "bars" in opts:
+        save(OUT / opts.get("out", "bgm_long.wav"), bgm(int(opts["bars"])))
+        print("total=%.1f" % (INTRO + int(opts["bars"]) * BAR + 3))
+        return
     save(OUT / "bgm.wav", bgm())
     for name, x in sfx().items():
         save(OUT / f"sfx_{name}.wav", x)
