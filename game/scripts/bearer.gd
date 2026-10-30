@@ -5,9 +5,14 @@ extends RigidBody3D
 ## 手拉东西的力会等量反作用到身体上，所以棺材越重、越歪，人就越站不稳。
 ## 本身不读键盘：由 main.gd 里的玩家、电脑队友或测试脚本每帧填写下面这几个“意图”。
 
+signal knocked  # 被机关撞飞了（计分用）
+
 const MODEL := preload("res://assets/bearer.glb")
-const FP_HIDDEN_LAYER := 2  # 第一人称时自己的身体放在这层，第一人称镜头不渲染
-const FP_ONLY_LAYER := 4  # 第一人称时才看得到的自己的手
+const HUMANOID := preload("res://scripts/humanoid_rig.gd")
+## 第一人称时每个玩家要对自己的镜头隐身、只露出手，所以每人占两个渲染层：
+## P1 身体在第 2 层、手在第 4 层；P2 身体在第 3 层、手在第 5 层。固定视角不渲染 4、5 层。
+const BODY_LAYERS := [2, 3]
+const HAND_LAYERS := [4, 5]
 
 const SPEED := 3.2
 const MOVE_ACCEL := 10.0
@@ -38,10 +43,19 @@ var hands: Array[RigidBody3D] = []
 var grabs: Array = [null, null]  # 每只手的关节
 var held: Array = [null, null]  # 每只手抓着的物体
 var bend := 0.0  # 当前前倾程度 0~1（往下够的时候）
+var traction := 1.0  # 抓地力：踩在湿地板上会变小，起步刹车都打滑
+var speed_scale := 1.0  # 走路速度倍数：沙地、流沙里会变小
+var ground_velocity := Vector3.ZERO  # 脚下踩着的东西（船）的速度：走路速度是相对它算的
+var stun := 0.0  # 被机关撞飞后还要晕多久：这段时间不走路、不站直、抓不住东西，任由身体乱滚
+var fly := 0.0  # 被弹簧板弹起来以后：落地之前不用走路的力刹车，按抛物线飞
+var puppet := false  # 联机客户端：不算物理，位置和 bend 都由房主的快照填写
+var character_slot := "player1"  # 主场景在 add_child 前分配 player1 / player2
 var _jump_was_down := false
 var _model: Node3D
 var _skeleton: Skeleton3D
 var _arm_bones: Array[int] = []
+var _arm_axes: Array[Vector3] = []
+var _first_person_owner := -1
 
 
 func _ready() -> void:
@@ -61,6 +75,9 @@ func _ready() -> void:
 	shape.shape = cap
 	add_child(shape)
 	_build_model()
+	var characters := get_node_or_null("/root/Characters")
+	if characters != null:
+		characters.changed.connect(_character_changed)
 
 	for side in [-1.0, 1.0]:
 		var hand := RigidBody3D.new()
@@ -80,25 +97,55 @@ func _ready() -> void:
 		hands.append(hand)
 
 
-## 第一人称时：自己的身体对第一人称镜头隐身，只露出两只手
-func set_first_person_owner() -> void:
-	for mi in _model.find_children("*", "MeshInstance3D", true, false):
-		mi.layers = 1 << (FP_HIDDEN_LAYER - 1)
+## 第 player 号玩家（0 或 1）的第一人称：身体放到自己的层（自己的镜头不渲染），另给两只手一个只有自己看得见的球
+func set_first_person_owner(player: int) -> void:
+	_first_person_owner = player
+	_apply_body_layers()
 	for hand in hands:
-		var m := Art.mesh(Art.sphere(0.07), Art.SKIN)
-		m.layers = 1 << (FP_ONLY_LAYER - 1)
-		hand.add_child(m)
+		var m: MeshInstance3D = hand.get_node_or_null("FirstPersonHand")
+		if m == null:
+			m = Art.mesh(Art.sphere(0.07), Art.SKIN)
+			m.name = "FirstPersonHand"
+			hand.add_child(m)
+		m.layers = 1 << (HAND_LAYERS[player] - 1)
+
+
+func _apply_body_layers() -> void:
+	if _model == null or _first_person_owner < 0:
+		return
+	for mi in _model.find_children("*", "MeshInstance3D", true, false):
+		mi.layers = 1 << (BODY_LAYERS[_first_person_owner] - 1)
+
+
+## 第 player 号玩家的第一人称镜头该看哪些层：不看自己的身体，也不看别人的“第一人称手”
+static func fp_cull_mask(player: int) -> int:
+	var mask := 0xFFFFF
+	mask &= ~(1 << (BODY_LAYERS[player] - 1))
+	mask &= ~(1 << (HAND_LAYERS[1 - player] - 1))
+	return mask
 
 
 func _build_model() -> void:
-	_model = MODEL.instantiate()
+	if _model != null:
+		remove_child(_model)
+		_model.queue_free()
+	_skeleton = null
+	_arm_bones.clear()
+	_arm_axes.clear()
+	var characters := get_node_or_null("/root/Characters")
+	_model = characters.make_model(character_slot) if characters != null else null
+	var custom := _model != null
+	if not custom:
+		_model = MODEL.instantiate()
 	_model.rotation.y = PI  # 模型面朝 +Z，我们的“前方”是 -Z
 	add_child(_model)
 	for mi in _model.find_children("*", "MeshInstance3D", true, false):
 		if mi.name.begins_with("Icosphere"):
 			mi.visible = false  # 绑骨结果里附带的辅助球，不要
 			continue
-		# 生成的模型偏光滑塑料感，统一压成哑光
+		if custom or mi.mesh == null:
+			continue
+		# 默认模型偏光滑塑料感，统一压成哑光；自定义模型保留原材质。
 		for i in mi.mesh.get_surface_count():
 			var src: Material = mi.mesh.surface_get_material(i)
 			if src is BaseMaterial3D:
@@ -107,27 +154,54 @@ func _build_model() -> void:
 				m.metallic = 0.0
 				m.metallic_specular = 0.15
 				mi.set_surface_override_material(i, m)
-	_skeleton = _model.find_children("*", "Skeleton3D", true, false).front()
-	for bone_name in ["LeftArm", "RightArm"]:
-		var idx := _skeleton.find_bone("mixamorig:" + bone_name)
-		if idx < 0:
-			idx = _skeleton.find_bone("mixamorig_" + bone_name)
-		_arm_bones.append(idx)
+	_skeleton = HUMANOID.skeleton_in(_model)
+	for side in ["Left", "Right"]:
+		var arm := HUMANOID.bone_index(_skeleton, side + "Arm")
+		var forearm := HUMANOID.bone_index(_skeleton, side + "ForeArm")
+		_arm_bones.append(arm)
+		var axis := Vector3.UP
+		if arm >= 0 and forearm >= 0:
+			var arm_rest := _skeleton.get_bone_global_rest(arm)
+			var local_elbow := arm_rest.affine_inverse() * _skeleton.get_bone_global_rest(forearm).origin
+			if local_elbow.length_squared() > 0.000001:
+				axis = local_elbow.normalized()
+		_arm_axes.append(axis)
+	_apply_body_layers()
 
 
-func _physics_process(_delta: float) -> void:
+func _character_changed(target: String) -> void:
+	if target == character_slot:
+		_build_model()
+
+
+func _physics_process(delta: float) -> void:
+	if puppet:
+		return
+	if stun > 0.0:
+		stun -= delta
+		bend = 0.0
+		for i in 2:
+			_drive_hand(i)
+		return
 	var dir := move_dir.limit_length(1.0)
 	var grounded := _is_grounded()
 
 	# 移动：力作用在腰部以下，起步和刹车时身体会自己晃
-	var vel_h := Vector3(linear_velocity.x, 0, linear_velocity.z)
-	var force := (dir * SPEED - vel_h) * mass * MOVE_ACCEL
-	force = force.limit_length(MOVE_MAX_FORCE * (1.0 if grounded else 0.25))
-	apply_force(force, global_basis.y * -0.45)
+	if fly > 0.0:
+		fly -= delta
+		if grounded and fly < 1.5:
+			fly = 0.0
+	else:
+		var vel_h := Vector3(linear_velocity.x, 0, linear_velocity.z)
+		var force := (dir * SPEED * speed_scale + ground_velocity - vel_h) * mass * MOVE_ACCEL * traction
+		force = force.limit_length(MOVE_MAX_FORCE * traction * (1.0 if grounded else 0.25))
+		apply_force(force, global_basis.y * -0.45)
 
 	# 保持站立：力度有限，负重太大就会被压歪
 	var av := angular_velocity
 	apply_torque(global_basis.y.cross(Vector3.UP) * UPRIGHT_K - Vector3(av.x, 0, av.z) * UPRIGHT_D)
+	if global_basis.y.y < -0.9:  # 摔得头朝下：上面那个力矩是零，额外踢一脚让他翻回来
+		apply_torque(global_basis.x * UPRIGHT_K)
 
 	var yaw_torque := -av.y * YAW_D
 	var fwd := -global_basis.z
@@ -170,7 +244,8 @@ func _process(_delta: float) -> void:
 		var dir := (to_skel * hands[i].global_position) - rest.origin
 		if dir.length() < 0.01:
 			continue
-		var aimed := Basis(Quaternion(rest.basis.y.normalized(), dir.normalized())) * rest.basis
+		var arm_direction := (rest.basis * _arm_axes[i]).normalized()
+		var aimed := Basis(Quaternion(arm_direction, dir.normalized())) * rest.basis
 		_skeleton.set_bone_pose_rotation(bone, (parent_pose.basis.inverse() * aimed).get_rotation_quaternion())
 
 
@@ -209,7 +284,7 @@ func _drive_hand(i: int) -> void:
 	hand.apply_central_force(f)
 	apply_force(-f, shoulder - global_position)
 
-	if want_grab[i]:
+	if want_grab[i] and stun <= 0.0:
 		if grabs[i] == null:
 			_try_grab(i)
 	else:
@@ -235,6 +310,20 @@ func _try_grab(i: int) -> void:
 			grabs[i] = j
 			held[i] = body
 			return
+
+
+## 被机关撞飞：松开手里的东西，朝 velocity 飞出去，翻着跟头晕 seconds 秒
+func knock(velocity: Vector3, seconds := 1.3) -> void:
+	knocked.emit()
+	release_all()
+	stun = seconds
+	linear_velocity = velocity
+	angular_velocity = Vector3(randf_range(-1.0, 1.0), randf_range(-0.5, 0.5), randf_range(-1.0, 1.0)).normalized() * 7.0
+
+
+func release_all() -> void:
+	for i in 2:
+		_release(i)
 
 
 func _release(i: int) -> void:

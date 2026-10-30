@@ -8,3 +8,7 @@
 build/
 generated/
 tools/.venv/
+
+# 宣传片素材（体积大）
+promo/
+__pycache__/
